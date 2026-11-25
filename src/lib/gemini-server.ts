@@ -10,6 +10,63 @@ import { buildMindMapTree } from "./mindmap-builder.ts";
 
 export const GEMINI_API_BASE = "https://generativelanguage.googleapis.com";
 
+export const DEFAULT_MODEL_CANDIDATES = [
+  "gemini-3.8-flash",
+  "gemini-flash-latest",
+  "gemini-2.5-flash",
+] as const;
+
+export interface ListedGeminiModel {
+  name?: string;
+  supportedGenerationMethods?: string[];
+}
+
+const EXCLUDED_MODEL_PATTERN =
+  /(embedding|tts|imagen|veo|aqa|robotics|computer-use|image|live|native-audio)/i;
+
+function scoreModel(name: string): { tier: number; version: number } {
+  const lower = name.toLowerCase();
+  const isFlash = lower.includes("flash");
+  const isLite = lower.includes("lite");
+  const tier = isFlash ? (isLite ? 2 : 3) : 1;
+
+  const verMatch = lower.match(/gemini-(\d+(?:\.\d+)?)/);
+  const version = verMatch ? Number(verMatch[1]) : 0;
+  return { tier, version };
+}
+
+export function selectBestFallbackModels(
+  models: ListedGeminiModel[],
+  alreadyTried: Set<string>
+): string[] {
+  const candidates: string[] = [];
+
+  for (const m of models) {
+    const rawName = (m.name || "").trim();
+    const shortName = rawName.replace(/^models\//, "");
+    if (!shortName.startsWith("gemini-")) continue;
+    if (alreadyTried.has(shortName)) continue;
+    if (EXCLUDED_MODEL_PATTERN.test(shortName)) continue;
+
+    const methods = Array.isArray(m.supportedGenerationMethods)
+      ? m.supportedGenerationMethods
+      : [];
+    if (!methods.includes("generateContent")) continue;
+
+    candidates.push(shortName);
+  }
+
+  candidates.sort((a, b) => {
+    const sa = scoreModel(a);
+    const sb = scoreModel(b);
+    if (sb.tier !== sa.tier) return sb.tier - sa.tier;
+    if (sb.version !== sa.version) return sb.version - sa.version;
+    return a.localeCompare(b);
+  });
+
+  return candidates;
+}
+
 export type AuthResolution =
   | { ok: true; apiKey: string }
   | { ok: false; status: number; error: string };

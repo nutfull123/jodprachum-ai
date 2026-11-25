@@ -10,7 +10,11 @@ import {
 } from "../src/lib/mime.ts";
 import { buildMindMapTree, computeTreeLayout, wrapThaiText } from "../src/lib/mindmap-builder.ts";
 import { formatForLineChat, formatTasksAsCsv } from "../src/lib/export-utils.ts";
-import { GEMINI_RESPONSE_SCHEMA } from "../src/lib/gemini-server.ts";
+import {
+  DEFAULT_MODEL_CANDIDATES,
+  GEMINI_RESPONSE_SCHEMA,
+  selectBestFallbackModels,
+} from "../src/lib/gemini-server.ts";
 import type { SavedMeeting } from "../src/types/meeting.ts";
 
 test("normalizeAudioMimeType strips codecs and normalizes browser/device audio formats", () => {
@@ -237,4 +241,48 @@ test("export utils prepend UTF-8 BOM for CSV and format LINE summary cleanly", (
   assert.ok(lineTxt.includes("ประชุมทีมสินค้า"));
   assert.ok(lineTxt.includes("ปล่อยเวอร์ชันแรกวันศุกร์"));
   assert.ok(lineTxt.includes("ฟีเจอร์ใหม่"));
+});
+
+test("DEFAULT_MODEL_CANDIDATES starts with gemini-3.8-flash and selectBestFallbackModels filters & ranks properly", () => {
+  assert.equal(DEFAULT_MODEL_CANDIDATES[0], "gemini-3.8-flash");
+
+  const picked = selectBestFallbackModels(
+    [
+      {
+        name: "models/gemini-2.5-flash-tts",
+        supportedGenerationMethods: ["generateContent"],
+      },
+      {
+        name: "models/gemini-embedding-001",
+        supportedGenerationMethods: ["embedContent"],
+      },
+      {
+        name: "models/imagen-4.0-generate-001",
+        supportedGenerationMethods: ["predict"],
+      },
+      {
+        name: "models/gemini-3.8-flash",
+        supportedGenerationMethods: ["generateContent"],
+      },
+      {
+        name: "models/gemini-3.5-flash",
+        supportedGenerationMethods: ["generateContent"],
+      },
+      {
+        name: "models/gemini-3.8-flash-lite",
+        supportedGenerationMethods: ["generateContent"],
+      },
+      {
+        name: "models/gemini-3.8-pro",
+        supportedGenerationMethods: ["generateContent"],
+      },
+    ],
+    new Set(["gemini-3.8-flash"])
+  );
+
+  assert.deepEqual(picked, [
+    "gemini-3.5-flash",
+    "gemini-3.8-flash-lite",
+    "gemini-3.8-pro",
+  ]);
 });

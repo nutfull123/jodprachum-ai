@@ -1,17 +1,18 @@
 import {
+  DEFAULT_MODEL_CANDIDATES,
   GEMINI_API_BASE,
   GEMINI_RESPONSE_SCHEMA,
   buildAnalysisPrompt,
   isSafeGoogleUrl,
   normalizeGeminiAnalysis,
   resolveAuth,
+  selectBestFallbackModels,
   translateGeminiHttpError,
+  type ListedGeminiModel,
 } from "@/lib/gemini-server";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
-
-const MODEL_CANDIDATES = ["gemini-2.5-flash", "gemini-2.0-flash"] as const;
 
 function stripJsonFence(text: string): string {
   const trimmed = text.trim();
@@ -156,8 +157,10 @@ export async function POST(req: Request) {
         let upstream: Response | null = null;
         let lastErrStatus = 500;
         let lastErrBody = "";
+        const triedModels = new Set<string>();
 
-        for (const model of MODEL_CANDIDATES) {
+        const tryStreamWithModel = async (model: string): Promise<Response | null> => {
+          triedModels.add(model);
           let res = await fetch(
             `${GEMINI_API_BASE}/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(auth.apiKey)}`,
             {
@@ -201,14 +204,57 @@ export async function POST(req: Request) {
             }
           }
 
-          if (res.ok && res.body) {
+          return res.ok && res.body ? res : null;
+        };
+
+        const envModel = process.env.GEMINI_MODEL?.trim();
+        const initialModels = Array.from(
+          new Set([
+            ...(envModel ? [envModel] : []),
+            ...DEFAULT_MODEL_CANDIDATES,
+          ])
+        );
+
+        for (const model of initialModels) {
+          const res = await tryStreamWithModel(model);
+          if (res) {
             upstream = res;
             break;
           }
-
-          // Fallback to next model only if model not found or temporarily unavailable
           if (lastErrStatus !== 404 && lastErrStatus !== 503) {
             break;
+          }
+        }
+
+        // Dynamic fallback: query available models from Gemini API if initial candidates returned 404/503
+        if (!upstream && (lastErrStatus === 404 || lastErrStatus === 503)) {
+          try {
+            const listRes = await fetch(
+              `${GEMINI_API_BASE}/v1beta/models?key=${encodeURIComponent(auth.apiKey)}`,
+              { signal: req.signal }
+            );
+            if (listRes.ok) {
+              const listJson = (await listRes.json()) as {
+                models?: ListedGeminiModel[];
+              };
+              const discovered = selectBestFallbackModels(
+                listJson.models || [],
+                triedModels
+              ).slice(0, 2);
+
+              for (const model of discovered) {
+                const res = await tryStreamWithModel(model);
+                if (res) {
+                  upstream = res;
+                  break;
+                }
+                if (lastErrStatus !== 404 && lastErrStatus !== 503) {
+                  break;
+                }
+              }
+            }
+          } catch {
+            // Ignore discovery errors and report original model error
           }
         }
 
