@@ -17,12 +17,21 @@ import {
 } from "../src/lib/gemini-server.ts";
 import { hitTestStroke } from "../src/lib/media-utils.ts";
 import {
+  createGuestRoomNotebook,
   createNotebookFromMeeting,
   createNotebookPage,
   ensureNotebookPages,
   mergeNotebook,
   strokePointsToSvgPath,
 } from "../src/lib/notebook-crdt.ts";
+import {
+  decodeMqttPackets,
+  decodeRemainingLength,
+  encodeMqttConnect,
+  encodeMqttPublish,
+  encodeMqttSubscribe,
+  encodeRemainingLength,
+} from "../src/lib/mqtt-ws.ts";
 import type { SavedMeeting } from "../src/types/meeting.ts";
 import type { ShootNotebook } from "../src/types/notebook.ts";
 
@@ -515,4 +524,137 @@ test("ensureNotebookPages upgrades legacy single-page notebooks and mergeNoteboo
     ["page-1", "page-3"]
   );
   assert.equal(visible[1].paperTemplate, "dark_lined");
+});
+
+test("mqtt-ws encodes and decodes MQTT 3.1.1 packets, Thai UTF-8, multi-byte lengths, and split frames", () => {
+  const smallRem = encodeRemainingLength(127);
+  assert.deepEqual(smallRem, [127]);
+  const bigRem = encodeRemainingLength(17_500);
+  assert.equal(
+    decodeRemainingLength(Uint8Array.from(bigRem), 0)?.value,
+    17_500
+  );
+
+  const connectPkt = encodeMqttConnect("shootnote-client-1", 25);
+  assert.equal(connectPkt[0], 0x10);
+  const subPkt = encodeMqttSubscribe(7, "shootnote/v2/SN-ABC123");
+  assert.equal(subPkt[0], 0x82);
+
+  // Build synthetic CONNACK + Thai PUBLISH (> 250 bytes) + 17,500-byte large PUBLISH + QoS1 PUBLISH
+  const connack = Uint8Array.from([0x20, 0x02, 0x00, 0x00]);
+  const thaiPayload = JSON.stringify({
+    kind: "delta",
+    title: "สรุปการประชุมทดลองซิงก์สดภาษาไทย ".repeat(6),
+  });
+  const pubThai = encodeMqttPublish("shootnote/v2/SN-ABC123", thaiPayload);
+  const hugePayload = "ก".repeat(6000); // > 18,000 UTF-8 bytes
+  const pubHuge = encodeMqttPublish("shootnote/v2/SN-ABC123", hugePayload);
+
+  // Merge buffers and split in the middle of pubHuge to test partial buffer handling
+  const stream = new Uint8Array(connack.length + pubThai.length + pubHuge.length);
+  stream.set(connack, 0);
+  stream.set(pubThai, connack.length);
+  stream.set(pubHuge, connack.length + pubThai.length);
+
+  const cut = connack.length + pubThai.length + 500;
+  const firstChunk = decodeMqttPackets(stream.subarray(0, cut));
+  assert.equal(firstChunk.packets.length, 2);
+  assert.deepEqual(firstChunk.packets[0], { type: "connack", returnCode: 0 });
+  assert.equal(firstChunk.packets[1].type, "publish");
+  if (firstChunk.packets[1].type === "publish") {
+    assert.equal(firstChunk.packets[1].topic, "shootnote/v2/SN-ABC123");
+    assert.equal(firstChunk.packets[1].payload, thaiPayload);
+  }
+  assert.equal(firstChunk.remaining.length, 500);
+
+  const combinedSecond = new Uint8Array(
+    firstChunk.remaining.length + (stream.length - cut)
+  );
+  combinedSecond.set(firstChunk.remaining, 0);
+  combinedSecond.set(stream.subarray(cut), firstChunk.remaining.length);
+
+  const secondChunk = decodeMqttPackets(combinedSecond);
+  assert.equal(secondChunk.packets.length, 1);
+  assert.equal(secondChunk.remaining.length, 0);
+  if (secondChunk.packets[0].type === "publish") {
+    assert.equal(secondChunk.packets[0].payload, hugePayload);
+  }
+});
+
+test("createGuestRoomNotebook cleanly adopts older host notebook metadata, pages, strokes, and items on join", () => {
+  const olderHostTime = 1_700_000_000_000;
+  const host: ShootNotebook = {
+    id: "host-nb-1",
+    kind: "notebook",
+    title: "สมุดจดจริงของโฮสต์",
+    paperTemplate: "dark_grid",
+    pageHeight: 2200,
+    pages: [
+      {
+        id: "page-1",
+        paperTemplate: "dark_grid",
+        pageHeight: 2200,
+        order: 0,
+        updatedAt: olderHostTime,
+      },
+      {
+        id: "page-2",
+        paperTemplate: "cornell",
+        pageHeight: 1600,
+        order: 1,
+        updatedAt: olderHostTime + 50,
+      },
+    ],
+    strokes: [
+      {
+        id: "host-stroke-1",
+        pageId: "page-1",
+        tool: "pen",
+        color: "#FFFFFF",
+        size: 6,
+        opacity: 1,
+        isStylus: true,
+        points: [
+          [20, 20, 0.5],
+          [80, 90, 0.7],
+        ],
+        updatedAt: olderHostTime,
+      },
+    ],
+    items: [
+      {
+        id: "host-sticky-1",
+        pageId: "page-2",
+        type: "sticky",
+        x: 100,
+        y: 100,
+        width: 240,
+        height: 180,
+        zIndex: 1,
+        text: "งานจากโฮสต์",
+        updatedAt: olderHostTime,
+      },
+    ],
+    roomId: "SN-TEST99",
+    metaUpdatedAt: olderHostTime,
+    createdAt: olderHostTime,
+    updatedAt: olderHostTime + 50,
+  };
+
+  // Guest opens invite link much later -> guest timestamps MUST NOT overwrite host metadata
+  const guest = createGuestRoomNotebook("SN-TEST99");
+  assert.equal(guest.metaUpdatedAt, 0);
+  assert.equal(guest.createdAt, 0);
+
+  const mergedOnGuest = mergeNotebook(guest, host);
+  assert.equal(mergedOnGuest.title, "สมุดจดจริงของโฮสต์");
+  assert.equal(mergedOnGuest.paperTemplate, "dark_grid");
+  assert.equal(mergedOnGuest.createdAt, olderHostTime);
+  assert.equal(mergedOnGuest.strokes.length, 1);
+  assert.equal(mergedOnGuest.items.length, 1);
+
+  const pages = ensureNotebookPages(mergedOnGuest);
+  assert.equal(pages.length, 2);
+  assert.equal(pages[0].paperTemplate, "dark_grid");
+  assert.equal(pages[1].paperTemplate, "cornell");
 });

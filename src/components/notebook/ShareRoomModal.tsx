@@ -7,6 +7,7 @@ import {
   Link2,
   LogOut,
   Radio,
+  RefreshCw,
   User,
   Users,
   X,
@@ -24,6 +25,7 @@ interface ShareRoomModalProps {
   onCreateRoom: () => void;
   onJoinRoom: (roomCodeOrUrl: string) => void;
   onLeaveRoom: () => void;
+  onForceSync?: () => void;
   onClose: () => void;
 }
 
@@ -37,11 +39,13 @@ export function ShareRoomModal({
   onCreateRoom,
   onJoinRoom,
   onLeaveRoom,
+  onForceSync,
   onClose,
 }: ShareRoomModalProps) {
   const [nameInput, setNameInput] = useState(displayName);
   const [joinInput, setJoinInput] = useState("");
   const [copiedLink, setCopiedLink] = useState(false);
+  const [syncRequested, setSyncRequested] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -163,8 +167,12 @@ export function ShareRoomModal({
                   <Radio className="h-4 w-4 text-emerald-600 animate-pulse" />
                   <span className="text-xs font-semibold text-emerald-900">
                     {syncStatus === "connected"
-                      ? `ห้องออนไลน์พร้อมใช้งาน (${peers.length + 1} คนในห้อง)`
-                      : "กำลังเชื่อมต่อเครือข่ายซิงก์สด..."}
+                      ? `เชื่อมต่อซิงก์สดแล้ว (${peers.length + 1} คนในห้อง)`
+                      : syncStatus === "local"
+                        ? "ซิงก์ในเครื่องพร้อมแล้ว · กำลังเชื่อมเครือข่ายเพื่อน..."
+                        : syncStatus === "connecting"
+                          ? "กำลังเชื่อมต่อเครือข่ายซิงก์สด..."
+                          : "ออฟไลน์ · บันทึกในเครื่องอัตโนมัติ"}
                   </span>
                 </div>
                 <span className="rounded-md bg-white border border-emerald-200 px-2 py-0.5 font-mono text-xs font-bold text-emerald-800">
@@ -217,7 +225,26 @@ export function ShareRoomModal({
                 </div>
               )}
 
-              <div className="flex justify-end pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                {onForceSync && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onForceSync();
+                      setSyncRequested(true);
+                      setTimeout(() => setSyncRequested(false), 1800);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-50"
+                  >
+                    <RefreshCw
+                      className={`h-3.5 w-3.5 ${syncRequested ? "animate-spin" : ""}`}
+                    />
+                    <span>
+                      {syncRequested ? "ส่งคำขอซิงก์แล้ว" : "ซิงก์ข้อมูลล่าสุด"}
+                    </span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={onLeaveRoom}
@@ -277,7 +304,7 @@ export function ShareRoomModal({
           )}
 
           <p className="text-[11px] text-muted leading-relaxed">
-            หมายเหตุ: การซิงก์สดเชื่อมต่อโดยตรงระหว่างเครื่องที่เปิดห้องพร้อมกัน (Peer-to-Peer) โดยทุกเครื่องจะบันทึกข้อมูลเก็บไว้ในเครื่องตัวเองอัตโนมัติ หรือกดส่งออกไฟล์ <code>.shootnote</code> ส่งให้เพื่อนเปิดทีหลังได้ครับ
+            หมายเหตุ: การซิงก์สดเชื่อมห้องผ่านเครือข่ายเรียลไทม์ (รองรับทั้ง iPad, มือถือ และคอมข้ามเน็ต) โดยทุกเครื่องจะบันทึกสมุดเก็บไว้ในเครื่องตัวเองอัตโนมัติ หรือส่งออกไฟล์ <code>.shootnote</code> ไว้สำรองได้ครับ
           </p>
         </div>
       </div>

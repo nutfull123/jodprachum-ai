@@ -21,6 +21,7 @@ import { buildMindMapTree } from "../lib/mindmap-builder";
 import { formatSeconds } from "../lib/mime";
 import {
   createEmptyNotebook,
+  createGuestRoomNotebook,
   createNotebookFromMeeting,
 } from "../lib/notebook-crdt";
 import { createSampleMeeting } from "../lib/sample-meeting";
@@ -139,9 +140,6 @@ export default function HomePage() {
   // ShootNote notebooks state
   const [notebooks, setNotebooks] = useState<ShootNotebook[]>([]);
   const [activeNotebookId, setActiveNotebookId] = useState<string | null>(null);
-  const [initialRoomCode, setInitialRoomCode] = useState<string | undefined>(
-    undefined
-  );
 
   // Meeting summarizer state
   const [meetings, setMeetings] = useState<SavedMeeting[]>([]);
@@ -183,18 +181,29 @@ export default function HomePage() {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get("room")?.trim().toUpperCase();
     if (roomParam) {
-      setInitialRoomCode(roomParam);
       setWorkspaceMode("notebook");
     }
 
     listNotebooks()
       .then((rows) => {
+        if (roomParam) {
+          const existing = rows.find((n) => n.roomId === roomParam);
+          if (existing) {
+            setNotebooks(rows);
+            setActiveNotebookId(existing.id);
+          } else {
+            const guestNb = createGuestRoomNotebook(roomParam);
+            saveNotebook(guestNb).catch(() => undefined);
+            setNotebooks([guestNb, ...rows]);
+            setActiveNotebookId(guestNb.id);
+          }
+          return;
+        }
+
         if (rows.length > 0) {
           setNotebooks(rows);
-          if (!roomParam) {
-            setActiveNotebookId(rows[0].id);
-          }
-        } else if (!roomParam) {
+          setActiveNotebookId(rows[0].id);
+        } else {
           const starter = createStarterNotebook();
           setNotebooks([starter]);
           setActiveNotebookId(starter.id);
@@ -202,9 +211,15 @@ export default function HomePage() {
         }
       })
       .catch(() => {
-        const starter = createStarterNotebook();
-        setNotebooks([starter]);
-        setActiveNotebookId(starter.id);
+        if (roomParam) {
+          const guestNb = createGuestRoomNotebook(roomParam);
+          setNotebooks([guestNb]);
+          setActiveNotebookId(guestNb.id);
+        } else {
+          const starter = createStarterNotebook();
+          setNotebooks([starter]);
+          setActiveNotebookId(starter.id);
+        }
       });
 
     listMeetings()
@@ -547,7 +562,6 @@ export default function HomePage() {
         <ShootNoteWorkspace
           notebooks={notebooks}
           activeNotebookId={activeNotebookId}
-          initialRoomCode={initialRoomCode}
           sidebarMobileOpen={sidebarMobileOpen}
           onCloseSidebarMobile={() => setSidebarMobileOpen(false)}
           onSelectNotebook={setActiveNotebookId}

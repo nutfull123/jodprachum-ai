@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpToLine,
   Edit3,
@@ -51,6 +51,30 @@ interface GoodNotesCanvasProps {
 }
 
 const VIRTUAL_WIDTH = 1000;
+
+const strokePathCache = new WeakMap<InkStroke, string>();
+
+function getCachedStrokePath(stroke: InkStroke): string {
+  const cached = strokePathCache.get(stroke);
+  if (cached !== undefined) return cached;
+  const computed = strokePointsToSvgPath(stroke.points, {
+    size: stroke.size,
+    tool: stroke.tool,
+    isStylus: stroke.isStylus,
+  });
+  strokePathCache.set(stroke, computed);
+  return computed;
+}
+
+const CommittedStrokePath = memo(function CommittedStrokePath({
+  stroke,
+}: {
+  stroke: InkStroke;
+}) {
+  const d = getCachedStrokePath(stroke);
+  if (!d) return null;
+  return <path d={d} fill={stroke.color} fillOpacity={stroke.opacity} />;
+});
 
 function getTemplateStyle(tpl: PaperTemplate): React.CSSProperties {
   switch (tpl) {
@@ -203,12 +227,26 @@ export function GoodNotesCanvas({
   const [scale, setScale] = useState(1);
   const [manualScale, setManualScale] = useState<number | null>(null);
 
-  // Active ink drawing
-  const [livePoints, setLivePoints] = useState<StrokePoint[] | null>(null);
-  const [liveStylus, setLiveStylus] = useState(false);
+  // Active ink drawing (stored in refs + direct SVG DOM updates for 120Hz Apple Pencil fluidity)
+  const livePointsRef = useRef<StrokePoint[]>([]);
+  const liveStylusRef = useRef(false);
+  const livePathRef = useRef<SVGPathElement | null>(null);
+  const rafIdRef = useRef<number | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
+  const activePointerTypeRef = useRef<string | null>(null);
   const erasedInDragRef = useRef<Set<string>>(new Set());
   const lastCursorSentRef = useRef(0);
+
+  const toolRef = useRef(tool);
+  toolRef.current = tool;
+  const palmRejectionRef = useRef(palmRejection);
+  palmRejectionRef.current = palmRejection;
+  const colorRef = useRef(color);
+  colorRef.current = color;
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
 
   // Item selection / drag / resize / inline text edit
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
@@ -224,11 +262,74 @@ export function GoodNotesCanvas({
     null
   );
 
-  // Clear selection when switching page
+  // Clear selection when switching page or leaving select tool
   useEffect(() => {
     setSelectedItemId(null);
     setEditingItemId(null);
   }, [activePage.id]);
+
+  useEffect(() => {
+    if (tool !== "select") {
+      setSelectedItemId(null);
+      setEditingItemId(null);
+    }
+  }, [tool]);
+
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+    };
+  }, []);
+
+  // Native non-passive iPadOS Safari touch guard so Apple Pencil never scrolls or gets cancelled mid-stroke
+  useEffect(() => {
+    const surfaceEl = surfaceRef.current;
+    if (!surfaceEl) return;
+
+    const hasStylusTouch = (ev: TouchEvent): boolean => {
+      for (let i = 0; i < ev.touches.length; i += 1) {
+        if (
+          (ev.touches[i] as Touch & { touchType?: string }).touchType ===
+          "stylus"
+        ) {
+          return true;
+        }
+      }
+      for (let i = 0; i < ev.changedTouches.length; i += 1) {
+        if (
+          (ev.changedTouches[i] as Touch & { touchType?: string }).touchType ===
+          "stylus"
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const handleTouchGuard = (ev: TouchEvent) => {
+      if (toolRef.current === "select") return;
+      if (hasStylusTouch(ev) || activePointerTypeRef.current === "pen") {
+        ev.preventDefault();
+        return;
+      }
+      if (!palmRejectionRef.current && ev.touches.length === 1) {
+        ev.preventDefault();
+      }
+    };
+
+    surfaceEl.addEventListener("touchstart", handleTouchGuard, {
+      passive: false,
+    });
+    surfaceEl.addEventListener("touchmove", handleTouchGuard, {
+      passive: false,
+    });
+    return () => {
+      surfaceEl.removeEventListener("touchstart", handleTouchGuard);
+      surfaceEl.removeEventListener("touchmove", handleTouchGuard);
+    };
+  }, []);
 
   // Responsive fit-to-width scaling
   useEffect(() => {
@@ -283,32 +384,83 @@ export function GoodNotesCanvas({
   const toCanvasCoords = (clientX: number, clientY: number) => {
     const rect = surfaceRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
+    const currentScale = scaleRef.current || 1;
     return {
-      x: Math.max(0, Math.min(VIRTUAL_WIDTH, (clientX - rect.left) / scale)),
-      y: Math.max(0, Math.min(pageHeight, (clientY - rect.top) / scale)),
+      x: Math.max(
+        0,
+        Math.min(VIRTUAL_WIDTH, (clientX - rect.left) / currentScale)
+      ),
+      y: Math.max(0, Math.min(pageHeight, (clientY - rect.top) / currentScale)),
     };
   };
 
-  const liveSvgPath = useMemo(() => {
-    if (!livePoints || livePoints.length === 0) return "";
-    return strokePointsToSvgPath(livePoints, {
-      size,
-      tool: tool === "highlighter" ? "highlighter" : "pen",
-      isStylus: liveStylus,
+  const clearLivePath = () => {
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+    livePointsRef.current = [];
+    if (livePathRef.current) {
+      livePathRef.current.setAttribute("d", "");
+    }
+  };
+
+  const renderLivePathNow = () => {
+    const pathEl = livePathRef.current;
+    const pts = livePointsRef.current;
+    if (!pathEl) return;
+    if (pts.length === 0) {
+      pathEl.setAttribute("d", "");
+      return;
+    }
+    const currentTool = toolRef.current;
+    const d = strokePointsToSvgPath(pts, {
+      size: sizeRef.current,
+      tool: currentTool === "highlighter" ? "highlighter" : "pen",
+      isStylus: liveStylusRef.current,
     });
-  }, [livePoints, size, tool, liveStylus]);
+    pathEl.setAttribute("d", d);
+    pathEl.setAttribute("fill", colorRef.current);
+    pathEl.setAttribute(
+      "fill-opacity",
+      currentTool === "highlighter" ? "0.36" : "1"
+    );
+  };
+
+  const scheduleLivePathRender = () => {
+    if (rafIdRef.current !== null) return;
+    rafIdRef.current = requestAnimationFrame(() => {
+      rafIdRef.current = null;
+      renderLivePathNow();
+    });
+  };
 
   const handleSurfacePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if ((e.target as HTMLElement).closest("[data-canvas-item='true']")) {
+    if (tool === "select") {
+      if (!(e.target as HTMLElement).closest("[data-canvas-item='true']")) {
+        setSelectedItemId(null);
+        setEditingItemId(null);
+      }
       return;
     }
 
+    // Never allow resting palm / finger touch to interrupt an active Apple Pencil stroke
+    if (
+      activePointerIdRef.current !== null &&
+      activePointerTypeRef.current === "pen" &&
+      e.pointerType !== "pen"
+    ) {
+      return;
+    }
+
+    if (palmRejection && e.pointerType !== "pen") return;
+    if (e.pointerType !== "pen" && (e.target as HTMLElement).closest("textarea")) {
+      return;
+    }
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+
     setSelectedItemId(null);
     setEditingItemId(null);
-
-    if (tool === "select") return;
-    if (palmRejection && e.pointerType !== "pen") return;
-    if (e.pointerType === "mouse" && e.button !== 0) return;
 
     e.preventDefault();
     try {
@@ -317,6 +469,7 @@ export function GoodNotesCanvas({
       // Ignore pointer capture errors
     }
     activePointerIdRef.current = e.pointerId;
+    activePointerTypeRef.current = e.pointerType;
 
     const { x, y } = toCanvasCoords(e.clientX, e.clientY);
 
@@ -337,8 +490,9 @@ export function GoodNotesCanvas({
       isStylus && Number.isFinite(e.pressure) && e.pressure > 0
         ? e.pressure
         : 0.5;
-    setLiveStylus(isStylus);
-    setLivePoints([[x, y, pressure]]);
+    liveStylusRef.current = isStylus;
+    livePointsRef.current = [[x, y, pressure]];
+    renderLivePathNow();
   };
 
   const handleSurfacePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -404,18 +558,44 @@ export function GoodNotesCanvas({
       return;
     }
 
-    if (!livePoints) return;
+    if (livePointsRef.current.length === 0) return;
+
     const isStylus = e.pointerType === "pen";
-    const pressure =
-      isStylus && Number.isFinite(e.pressure) && e.pressure > 0
-        ? e.pressure
-        : 0.5;
-    setLivePoints((prev) =>
-      prev ? [...prev, [x, y, pressure]] : [[x, y, pressure]]
-    );
+    const nativeEv = e.nativeEvent;
+    const coalesced =
+      typeof nativeEv.getCoalescedEvents === "function"
+        ? nativeEv.getCoalescedEvents()
+        : [];
+    const samples = coalesced.length > 0 ? coalesced : [nativeEv];
+
+    let added = false;
+    for (const sample of samples) {
+      const pt = toCanvasCoords(sample.clientX, sample.clientY);
+      const last = livePointsRef.current[livePointsRef.current.length - 1];
+      if (last) {
+        const dx = pt.x - last[0];
+        const dy = pt.y - last[1];
+        if (dx * dx + dy * dy < 1.44) {
+          continue;
+        }
+      }
+      const pressure =
+        isStylus && Number.isFinite(sample.pressure) && sample.pressure > 0
+          ? sample.pressure
+          : 0.5;
+      livePointsRef.current.push([pt.x, pt.y, pressure]);
+      added = true;
+    }
+
+    if (added) {
+      scheduleLivePathRender();
+    }
   };
 
-  const finishPointerInteraction = (e: React.PointerEvent<HTMLDivElement>) => {
+  const finishPointerInteraction = (
+    e: React.PointerEvent<HTMLDivElement>,
+    isCancel: boolean = false
+  ) => {
     if (itemActionRef.current) {
       const finished = itemActionRef.current.draft;
       itemActionRef.current = null;
@@ -425,14 +605,25 @@ export function GoodNotesCanvas({
     }
 
     if (activePointerIdRef.current !== e.pointerId) return;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // Ignore release errors
+    }
     activePointerIdRef.current = null;
+    activePointerTypeRef.current = null;
 
     if (tool === "eraser") {
       erasedInDragRef.current.clear();
       return;
     }
 
-    if (livePoints && livePoints.length > 0) {
+    const points = livePointsRef.current.slice();
+    const isStylus = liveStylusRef.current;
+    clearLivePath();
+
+    const minPoints = isCancel ? 2 : 1;
+    if (points.length >= minPoints) {
       const stroke: InkStroke = {
         id:
           typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -443,19 +634,16 @@ export function GoodNotesCanvas({
         color,
         size,
         opacity: tool === "highlighter" ? 0.36 : 1,
-        isStylus: liveStylus,
-        points: livePoints,
+        isStylus,
+        points,
         updatedAt: Date.now(),
       };
-      setLivePoints(null);
       onAddStroke(stroke);
-    } else {
-      setLivePoints(null);
     }
   };
 
   const drawingTouchAction =
-    tool === "select" || palmRejection ? "pan-y pinch-zoom" : "none";
+    tool === "select" ? "auto" : palmRejection ? "pan-y pinch-zoom" : "none";
 
   return (
     <div
@@ -476,14 +664,17 @@ export function GoodNotesCanvas({
           data-dark-paper={darkPaper ? "true" : "false"}
           onPointerDown={handleSurfacePointerDown}
           onPointerMove={handleSurfacePointerMove}
-          onPointerUp={finishPointerInteraction}
-          onPointerCancel={finishPointerInteraction}
+          onPointerUp={(e) => finishPointerInteraction(e, false)}
+          onPointerCancel={(e) => finishPointerInteraction(e, true)}
           style={{
             width: `${VIRTUAL_WIDTH}px`,
             height: `${pageHeight}px`,
             transform: `scale(${scale})`,
             transformOrigin: "top left",
             touchAction: drawingTouchAction,
+            WebkitUserSelect: tool === "select" ? "auto" : "none",
+            userSelect: tool === "select" ? "auto" : "none",
+            WebkitTouchCallout: "none",
             ...getTemplateStyle(activePage.paperTemplate),
           }}
           className={`relative rounded-2xl border shadow-md overflow-hidden ${
@@ -510,6 +701,7 @@ export function GoodNotesCanvas({
             <div
               data-canvas-item="true"
               data-paper-card="true"
+              style={{ pointerEvents: tool === "select" ? "auto" : "none" }}
               className="relative z-20 mx-6 mt-6 rounded-2xl border border-amber-200 bg-[#FFFBEB] p-4 shadow-sm space-y-2"
             >
               <div className="flex items-center justify-between">
@@ -548,11 +740,10 @@ export function GoodNotesCanvas({
                   width: `${item.width}px`,
                   height: `${item.height}px`,
                   zIndex: item.zIndex + 10,
-                  pointerEvents:
-                    tool === "select" || isSelected ? "auto" : "none",
+                  pointerEvents: tool === "select" ? "auto" : "none",
                 }}
                 onPointerDown={(e) => {
-                  if (tool !== "select" && !isSelected) return;
+                  if (tool !== "select") return;
                   if (
                     (e.target as HTMLElement).closest(
                       "[data-item-control='true']"
@@ -881,30 +1072,16 @@ export function GoodNotesCanvas({
             xmlns="http://www.w3.org/2000/svg"
             className="pointer-events-none absolute inset-0 z-30"
           >
-            {visibleStrokes.map((stroke) => {
-              const d = strokePointsToSvgPath(stroke.points, {
-                size: stroke.size,
-                tool: stroke.tool,
-                isStylus: stroke.isStylus,
-              });
-              if (!d) return null;
-              return (
-                <path
-                  key={stroke.id}
-                  d={d}
-                  fill={stroke.color}
-                  fillOpacity={stroke.opacity}
-                />
-              );
-            })}
+            {visibleStrokes.map((stroke) => (
+              <CommittedStrokePath key={stroke.id} stroke={stroke} />
+            ))}
 
-            {liveSvgPath && (
-              <path
-                d={liveSvgPath}
-                fill={color}
-                fillOpacity={tool === "highlighter" ? 0.36 : 1}
-              />
-            )}
+            <path
+              ref={livePathRef}
+              d=""
+              fill={color}
+              fillOpacity={tool === "highlighter" ? 0.36 : 1}
+            />
           </svg>
 
           {/* Live Remote Collaborator Cursors */}

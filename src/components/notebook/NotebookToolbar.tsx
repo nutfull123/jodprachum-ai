@@ -184,7 +184,7 @@ export function NotebookToolbar({
             title="เปิดเมื่อใช้ Apple Pencil บน iPad เพื่อกันมือโดนและใช้นิ้วเลื่อนหน้าได้"
           >
             <Pencil className="h-3.5 w-3.5" />
-            <span className="hidden md:inline">
+            <span className="hidden sm:inline">
               {palmRejection ? "ปากกา iPad: เปิด" : "ปากกา iPad"}
             </span>
           </button>

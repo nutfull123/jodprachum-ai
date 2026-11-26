@@ -27,6 +27,7 @@ import {
 import { compressImageToDataUrl } from "../../lib/media-utils";
 import {
   createEmptyNotebook,
+  createGuestRoomNotebook,
   createNotebookPage,
   ensureNotebookPages,
   generateRoomCode,
@@ -117,6 +118,8 @@ export function ShootNoteWorkspace({
   const syncSessionRef = useRef<RoomSyncSession | null>(null);
   const activeNotebookRef = useRef<ShootNotebook | null>(activeNotebook);
   activeNotebookRef.current = activeNotebook;
+  const collabNameRef = useRef(collabName);
+  collabNameRef.current = collabName;
 
   useEffect(() => {
     const stored = getDisplayName();
@@ -152,7 +155,7 @@ export function ShootNoteWorkspace({
     [onUpsertNotebook]
   );
 
-  // Handle incoming ?room= code from invite link
+  // Handle incoming ?room= code if passed explicitly as prop
   useEffect(() => {
     if (!initialRoomCode) return;
     const existingWithRoom = notebooks.find(
@@ -163,17 +166,14 @@ export function ShootNoteWorkspace({
       return;
     }
 
-    const joinedNb: ShootNotebook = {
-      ...createEmptyNotebook("notebook", `ห้องแชร์ ${initialRoomCode}`),
-      roomId: initialRoomCode,
-    };
+    const joinedNb = createGuestRoomNotebook(initialRoomCode);
     onUpsertNotebook(joinedNb);
     saveNotebook(joinedNb).catch(() => undefined);
     onSelectNotebook(joinedNb.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialRoomCode]);
 
-  // Connect / disconnect P2P + BroadcastChannel room sync when activeNotebook.roomId changes
+  // Connect / disconnect MQTT-WSS + BroadcastChannel room sync when activeNotebook.roomId changes
   const activeRoomId = activeNotebook?.roomId;
 
   useEffect(() => {
@@ -224,13 +224,14 @@ export function ShootNoteWorkspace({
         });
       }
 
+      activeNotebookRef.current = merged;
       onUpsertNotebook(merged);
       saveNotebook(merged).catch(() => undefined);
     };
 
     createRoomSyncSession({
       roomId: activeRoomId,
-      displayName: collabName || "ฉัน",
+      getDisplayName: () => collabNameRef.current || "ฉัน",
       getCurrentNotebook: () => activeNotebookRef.current,
       onFullState: (remoteNb) => {
         if (cancelled) return;
@@ -241,8 +242,15 @@ export function ShootNoteWorkspace({
           id: current.id,
           roomId: activeRoomId,
         });
+        activeNotebookRef.current = merged;
         onUpsertNotebook(merged);
         saveNotebook(merged).catch(() => undefined);
+        const validPages = ensureNotebookPages(merged);
+        setActivePageId((prevPageId) =>
+          validPages.some((p) => p.id === prevPageId)
+            ? prevPageId
+            : validPages[0]?.id || "page-1"
+        );
       },
       onDelta: (delta) => {
         if (cancelled) return;
@@ -271,7 +279,7 @@ export function ShootNoteWorkspace({
       syncSessionRef.current?.leave();
       syncSessionRef.current = null;
     };
-  }, [activeRoomId, collabName, onUpsertNotebook]);
+  }, [activeRoomId, onUpsertNotebook]);
 
   const handleCreateNotebook = (kind: "notebook" | "shortnote") => {
     const nb = createEmptyNotebook(kind);
@@ -769,10 +777,7 @@ export function ShootNoteWorkspace({
       onSelectNotebook(existing.id);
       return;
     }
-    const joined: ShootNotebook = {
-      ...createEmptyNotebook("notebook", `ห้องแชร์ ${clean}`),
-      roomId: clean,
-    };
+    const joined = createGuestRoomNotebook(clean);
     onUpsertNotebook(joined);
     saveNotebook(joined).catch(() => undefined);
     onSelectNotebook(joined.id);
@@ -865,7 +870,16 @@ export function ShootNoteWorkspace({
                     <Radio className="h-3 w-3 animate-pulse" />
                     {syncStatus === "connected"
                       ? `Live (${peers.length + 1})`
-                      : "กำลังเชื่อมห้อง..."}
+                      : syncStatus === "local"
+                        ? `ในเครื่อง (${peers.length + 1}) · กำลังเชื่อมเน็ต`
+                        : syncStatus === "connecting"
+                          ? "กำลังเชื่อมห้อง..."
+                          : "ออฟไลน์"}
+                  </span>
+                )}
+                {palmRejection && (
+                  <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-accent-soft border border-accent/25 px-2 py-0.5 font-medium text-accent-dark">
+                    ✏️ โหมด Apple Pencil · ใช้นิ้วเลื่อนหน้าได้
                   </span>
                 )}
                 <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
@@ -1110,11 +1124,14 @@ export function ShootNoteWorkspace({
         displayName={collabName}
         onChangeDisplayName={(name) => {
           setCollabName(name);
+          collabNameRef.current = name;
           setDisplayName(name);
+          syncSessionRef.current?.announcePresence();
         }}
         onCreateRoom={handleCreateRoom}
         onJoinRoom={handleJoinRoom}
         onLeaveRoom={handleLeaveRoom}
+        onForceSync={() => syncSessionRef.current?.requestSync()}
         onClose={() => setShareModalOpen(false)}
       />
     </div>

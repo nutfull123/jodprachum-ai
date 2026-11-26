@@ -61,6 +61,35 @@ export function ensureNotebookPages(nb: ShootNotebook): NotebookPage[] {
   ];
 }
 
+export function createGuestRoomNotebook(roomId: string): ShootNotebook {
+  const cleanRoom = roomId.trim().toUpperCase();
+  return {
+    id:
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `nb-room-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    kind: "notebook",
+    title: `ห้องแชร์ ${cleanRoom}`,
+    paperTemplate: "lined",
+    pageHeight: 1600,
+    pages: [
+      {
+        id: "page-1",
+        paperTemplate: "lined",
+        pageHeight: 1600,
+        order: 0,
+        updatedAt: 0,
+      },
+    ],
+    strokes: [],
+    items: [],
+    roomId: cleanRoom,
+    metaUpdatedAt: 0,
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
 export function createEmptyNotebook(
   kind: "notebook" | "shortnote" = "notebook",
   title?: string
@@ -139,6 +168,11 @@ export function mergeNotebook(
     ? remote.pages
     : ensureNotebookPages(remote);
 
+  const createdAt =
+    local.createdAt > 0 && remote.createdAt > 0
+      ? Math.min(local.createdAt, remote.createdAt)
+      : local.createdAt || remote.createdAt || Date.now();
+
   return {
     id: local.id || remote.id,
     kind: useRemoteMeta ? remote.kind : local.kind,
@@ -151,7 +185,7 @@ export function mergeNotebook(
     items: mergeByIdLWW<CanvasItem>(local.items || [], remote.items || []),
     roomId: local.roomId || remote.roomId,
     metaUpdatedAt: Math.max(local.metaUpdatedAt || 0, remote.metaUpdatedAt || 0),
-    createdAt: Math.min(local.createdAt || Date.now(), remote.createdAt || Date.now()),
+    createdAt,
     updatedAt: Math.max(local.updatedAt || 0, remote.updatedAt || 0),
   };
 }
