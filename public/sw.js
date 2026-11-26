@@ -1,4 +1,4 @@
-const CACHE_NAME = "jodprachum-shell-v1";
+const CACHE_NAME = "shootnote-shell-v2";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
@@ -19,6 +19,19 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+self.addEventListener("message", (event) => {
+  const msgType = event.data && event.data.type;
+  if (msgType === "SKIP_WAITING") {
+    event.waitUntil(self.skipWaiting());
+  } else if (msgType === "CLEAR_CACHES") {
+    event.waitUntil(
+      caches
+        .keys()
+        .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+    );
+  }
+});
+
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
@@ -33,7 +46,10 @@ self.addEventListener("fetch", (event) => {
       .then((res) => {
         if (res.ok && res.type === "basic") {
           const copy = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, copy)).catch(() => undefined);
+          caches
+            .open(CACHE_NAME)
+            .then((cache) => cache.put(req, copy))
+            .catch(() => undefined);
         }
         return res;
       })

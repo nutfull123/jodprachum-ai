@@ -32,6 +32,10 @@ import {
   encodeMqttSubscribe,
   encodeRemainingLength,
 } from "../src/lib/mqtt-ws.ts";
+import {
+  UPDATE_SNOOZE_MS,
+  shouldPromptAppUpdate,
+} from "../src/lib/app-version.ts";
 import type { SavedMeeting } from "../src/types/meeting.ts";
 import type { ShootNotebook } from "../src/types/notebook.ts";
 
@@ -657,4 +661,62 @@ test("createGuestRoomNotebook cleanly adopts older host notebook metadata, pages
   assert.equal(pages.length, 2);
   assert.equal(pages[0].paperTemplate, "dark_grid");
   assert.equal(pages[1].paperTemplate, "cornell");
+});
+
+test("shouldPromptAppUpdate detects new builds cleanly and respects snooze window", () => {
+  const t0 = 1_750_000_000_000;
+
+  // Same build or dev mode should never prompt
+  assert.equal(
+    shouldPromptAppUpdate({ clientBuildId: "abc123", serverBuildId: "abc123", now: t0 }),
+    false
+  );
+  assert.equal(
+    shouldPromptAppUpdate({ clientBuildId: "dev", serverBuildId: "abc123", now: t0 }),
+    false
+  );
+  assert.equal(
+    shouldPromptAppUpdate({ clientBuildId: "abc123", serverBuildId: "dev", now: t0 }),
+    false
+  );
+
+  // Newer deployed build triggers prompt immediately
+  assert.equal(
+    shouldPromptAppUpdate({ clientBuildId: "abc123", serverBuildId: "def456", now: t0 }),
+    true
+  );
+
+  // Snoozing def456 suppresses until UPDATE_SNOOZE_MS elapses
+  assert.equal(
+    shouldPromptAppUpdate({
+      clientBuildId: "abc123",
+      serverBuildId: "def456",
+      snoozedBuildId: "def456",
+      snoozedUntil: t0 + UPDATE_SNOOZE_MS,
+      now: t0 + 5_000,
+    }),
+    false
+  );
+  assert.equal(
+    shouldPromptAppUpdate({
+      clientBuildId: "abc123",
+      serverBuildId: "def456",
+      snoozedBuildId: "def456",
+      snoozedUntil: t0 + UPDATE_SNOOZE_MS,
+      now: t0 + UPDATE_SNOOZE_MS + 1,
+    }),
+    true
+  );
+
+  // If an even newer build (ghi789) deploys while def456 is snoozed, prompt immediately
+  assert.equal(
+    shouldPromptAppUpdate({
+      clientBuildId: "abc123",
+      serverBuildId: "ghi789",
+      snoozedBuildId: "def456",
+      snoozedUntil: t0 + UPDATE_SNOOZE_MS,
+      now: t0 + 5_000,
+    }),
+    true
+  );
 });

@@ -42,7 +42,16 @@ import {
   setStoredTheme,
   updateMeetingAnalysis,
 } from "../lib/storage";
+import {
+  APP_RELEASE_VERSION,
+  APP_UPDATE_HIGHLIGHTS,
+  CLIENT_BUILD_ID,
+  UPDATE_SNOOZE_MS,
+  shouldPromptAppUpdate,
+  type AppVersionPayload,
+} from "../lib/app-version";
 import { ApiKeyModal } from "../components/ApiKeyModal";
+import { AppUpdateBanner } from "../components/AppUpdateBanner";
 import { AudioInputPanel } from "../components/AudioInputPanel";
 import { AudioPlayerBar, type AudioPlayerHandle } from "../components/AudioPlayerBar";
 import { ExportMenu } from "../components/ExportMenu";
@@ -163,11 +172,85 @@ export default function HomePage() {
   const [activeAudioUrl, setActiveAudioUrl] = useState<string | null>(null);
   const audioPlayerRef = useRef<AudioPlayerHandle | null>(null);
 
+  // App auto-update state
+  const [availableUpdate, setAvailableUpdate] =
+    useState<AppVersionPayload | null>(null);
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
+  const swRegistrationRef = useRef<ServiceWorkerRegistration | null>(null);
+  const snoozedRef = useRef<{ buildId: string | null; until: number }>({
+    buildId: null,
+    until: 0,
+  });
+
   // Processing state
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [progress, setProgress] = useState<AnalyzeProgress | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  const checkForUpdates = useCallback(async () => {
+    try {
+      swRegistrationRef.current?.update().catch(() => undefined);
+      const res = await fetch(`/api/version?t=${Date.now()}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as AppVersionPayload;
+      if (!data?.buildId) return;
+
+      if (CLIENT_BUILD_ID !== "dev" && data.buildId !== CLIENT_BUILD_ID) {
+        setAvailableUpdate({
+          buildId: data.buildId,
+          version: data.version || APP_RELEASE_VERSION,
+          builtAt: data.builtAt || "",
+          highlights:
+            Array.isArray(data.highlights) && data.highlights.length > 0
+              ? data.highlights
+              : APP_UPDATE_HIGHLIGHTS,
+        });
+        if (
+          shouldPromptAppUpdate({
+            clientBuildId: CLIENT_BUILD_ID,
+            serverBuildId: data.buildId,
+            snoozedBuildId: snoozedRef.current.buildId,
+            snoozedUntil: snoozedRef.current.until,
+          })
+        ) {
+          setUpdateDialogOpen(true);
+        }
+      }
+    } catch {
+      // Ignore transient network errors when checking updates
+    }
+  }, []);
+
+  const handleApplyUpdate = useCallback(async () => {
+    setIsApplyingUpdate(true);
+    try {
+      const reg = swRegistrationRef.current;
+      reg?.waiting?.postMessage({ type: "CLEAR_CACHES" });
+      reg?.waiting?.postMessage({ type: "SKIP_WAITING" });
+      reg?.active?.postMessage({ type: "CLEAR_CACHES" });
+      if ("caches" in window) {
+        const keys = await window.caches.keys();
+        await Promise.all(keys.map((k) => window.caches.delete(k)));
+      }
+    } catch {
+      // Ignore cache cleanup errors and reload anyway
+    }
+    window.location.reload();
+  }, []);
+
+  const handleSnoozeUpdate = useCallback(() => {
+    if (availableUpdate) {
+      snoozedRef.current = {
+        buildId: availableUpdate.buildId,
+        until: Date.now() + UPDATE_SNOOZE_MS,
+      };
+    }
+    setUpdateDialogOpen(false);
+  }, [availableUpdate]);
 
   // Load local IndexedDB notebooks + meetings + localStorage keys + server config + PWA listeners
   useEffect(() => {
@@ -248,7 +331,24 @@ export default function HomePage() {
     setIsStandalone(standaloneQuery.matches || navStandalone);
 
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+      navigator.serviceWorker
+        .register("/sw.js", { updateViaCache: "none" })
+        .then((reg) => {
+          swRegistrationRef.current = reg;
+          reg.addEventListener("updatefound", () => {
+            const installing = reg.installing;
+            if (!installing) return;
+            installing.addEventListener("statechange", () => {
+              if (
+                installing.state === "installed" &&
+                navigator.serviceWorker.controller
+              ) {
+                checkForUpdates();
+              }
+            });
+          });
+        })
+        .catch(() => undefined);
     }
 
     const onBeforeInstallPrompt = (e: Event) => {
@@ -260,15 +360,40 @@ export default function HomePage() {
       setIsStandalone(true);
       setInstallModalOpen(false);
     };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        checkForUpdates();
+      }
+    };
+    const onWindowFocusOrOnline = () => {
+      checkForUpdates();
+    };
+
+    const initialUpdateTimer = window.setTimeout(() => {
+      checkForUpdates();
+    }, 2000);
+    const updatePollInterval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        checkForUpdates();
+      }
+    }, 60_000);
 
     window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
     window.addEventListener("appinstalled", onAppInstalled);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onWindowFocusOrOnline);
+    window.addEventListener("online", onWindowFocusOrOnline);
 
     return () => {
+      window.clearTimeout(initialUpdateTimer);
+      window.clearInterval(updatePollInterval);
       window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
       window.removeEventListener("appinstalled", onAppInstalled);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onWindowFocusOrOnline);
+      window.removeEventListener("online", onWindowFocusOrOnline);
     };
-  }, []);
+  }, [checkForUpdates]);
 
   const activeMeeting = useMemo(
     () => meetings.find((m) => m.id === activeMeetingId) || null,
@@ -762,6 +887,15 @@ export default function HomePage() {
         canPromptInstall={Boolean(deferredInstallPrompt)}
         onPromptInstall={handlePromptInstall}
         onClose={() => setInstallModalOpen(false)}
+      />
+
+      <AppUpdateBanner
+        updateInfo={availableUpdate}
+        isDialogOpen={updateDialogOpen}
+        isUpdating={isApplyingUpdate}
+        onApplyUpdate={handleApplyUpdate}
+        onSnooze={handleSnoozeUpdate}
+        onReopen={() => setUpdateDialogOpen(true)}
       />
     </div>
   );
