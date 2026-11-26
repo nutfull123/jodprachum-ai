@@ -39,12 +39,20 @@ export function createNotebookPage(
   };
 }
 
+function comparePages(a: NotebookPage, b: NotebookPage): number {
+  return (
+    a.order - b.order ||
+    a.updatedAt - b.updatedAt ||
+    a.id.localeCompare(b.id)
+  );
+}
+
 export function ensureNotebookPages(nb: ShootNotebook): NotebookPage[] {
   const raw = Array.isArray(nb.pages) ? nb.pages : [];
   const active = raw
     .filter((p) => !p.deleted)
     .slice()
-    .sort((a, b) => a.order - b.order);
+    .sort(comparePages);
 
   if (active.length > 0) {
     return active;
@@ -59,6 +67,17 @@ export function ensureNotebookPages(nb: ShootNotebook): NotebookPage[] {
       updatedAt: nb.metaUpdatedAt || nb.createdAt || 0,
     },
   ];
+}
+
+export function attachNotebookToRoom(
+  nb: ShootNotebook,
+  roomId: string
+): ShootNotebook {
+  return {
+    ...nb,
+    roomId: roomId.trim().toUpperCase(),
+    updatedAt: Date.now(),
+  };
 }
 
 export function createGuestRoomNotebook(roomId: string): ShootNotebook {
@@ -155,7 +174,7 @@ function mergePagesLWW(
       });
     }
   }
-  return Array.from(map.values()).sort((a, b) => a.order - b.order);
+  return Array.from(map.values()).sort(comparePages);
 }
 
 export function mergeNotebook(

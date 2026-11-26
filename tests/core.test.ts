@@ -17,6 +17,7 @@ import {
 } from "../src/lib/gemini-server.ts";
 import { hitTestStroke } from "../src/lib/media-utils.ts";
 import {
+  attachNotebookToRoom,
   createGuestRoomNotebook,
   createNotebookFromMeeting,
   createNotebookPage,
@@ -719,4 +720,143 @@ test("shouldPromptAppUpdate detects new builds cleanly and respects snooze windo
     }),
     true
   );
+});
+
+test("attachNotebookToRoom and mergeNotebook converge deterministically after offline forked work", () => {
+  const sharedPage1 = {
+    id: "page-1",
+    paperTemplate: "lined" as const,
+    pageHeight: 1600,
+    order: 0,
+    updatedAt: 1000,
+  };
+
+  // Both worked offline after closing Live: both added a new page with order: 1
+  const hostOffline: ShootNotebook = {
+    id: "nb-host",
+    kind: "notebook",
+    title: "งานกลุ่มบทที่ 1",
+    paperTemplate: "lined",
+    pageHeight: 1600,
+    pages: [
+      sharedPage1,
+      {
+        id: "page-host-2",
+        paperTemplate: "grid",
+        pageHeight: 1600,
+        order: 1,
+        updatedAt: 2000,
+      },
+    ],
+    strokes: [
+      {
+        id: "stroke-host",
+        pageId: "page-1",
+        tool: "pen",
+        color: "#1C1B18",
+        size: 6,
+        opacity: 1,
+        isStylus: true,
+        points: [
+          [10, 10, 0.5],
+          [50, 50, 0.5],
+        ],
+        updatedAt: 2100,
+      },
+    ],
+    items: [
+      {
+        id: "sticky-host",
+        pageId: "page-host-2",
+        type: "sticky",
+        x: 40,
+        y: 40,
+        width: 200,
+        height: 150,
+        zIndex: 1,
+        text: "ส่วนของพลอย",
+        updatedAt: 2200,
+      },
+    ],
+    roomId: "SN-MERGE1",
+    metaUpdatedAt: 2000,
+    createdAt: 1000,
+    updatedAt: 2200,
+  };
+
+  const friendOfflineCopy: ShootNotebook = {
+    id: "nb-friend",
+    kind: "notebook",
+    title: "งานกลุ่มบทที่ 1",
+    paperTemplate: "lined",
+    pageHeight: 1600,
+    pages: [
+      sharedPage1,
+      {
+        id: "page-friend-2",
+        paperTemplate: "dark_lined",
+        pageHeight: 1600,
+        order: 1,
+        updatedAt: 2500,
+      },
+    ],
+    strokes: [
+      {
+        id: "stroke-friend",
+        pageId: "page-1",
+        tool: "pen",
+        color: "#0F766E",
+        size: 6,
+        opacity: 1,
+        isStylus: false,
+        points: [
+          [120, 120, 0.5],
+          [180, 140, 0.5],
+        ],
+        updatedAt: 2400,
+      },
+    ],
+    items: [
+      {
+        id: "sticky-friend",
+        pageId: "page-friend-2",
+        type: "sticky",
+        x: 80,
+        y: 80,
+        width: 220,
+        height: 150,
+        zIndex: 2,
+        text: "ส่วนของต้น",
+        updatedAt: 2600,
+      },
+    ],
+    metaUpdatedAt: 1500,
+    createdAt: 1000,
+    updatedAt: 2600,
+  };
+
+  const friendAttached = attachNotebookToRoom(friendOfflineCopy, "sn-merge1");
+  assert.equal(friendAttached.roomId, "SN-MERGE1");
+
+  const mergedOnHost = mergeNotebook(hostOffline, friendAttached);
+  const mergedOnFriend = mergeNotebook(friendAttached, hostOffline);
+
+  const hostPages = ensureNotebookPages(mergedOnHost);
+  const friendPages = ensureNotebookPages(mergedOnFriend);
+
+  // Both devices converge to exact same 3 pages in identical deterministic order
+  assert.deepEqual(
+    hostPages.map((p) => p.id),
+    ["page-1", "page-host-2", "page-friend-2"]
+  );
+  assert.deepEqual(
+    friendPages.map((p) => p.id),
+    hostPages.map((p) => p.id)
+  );
+
+  // Both strokes and both stickies preserved on both devices
+  assert.equal(mergedOnHost.strokes.length, 2);
+  assert.equal(mergedOnFriend.strokes.length, 2);
+  assert.equal(mergedOnHost.items.length, 2);
+  assert.equal(mergedOnFriend.items.length, 2);
 });

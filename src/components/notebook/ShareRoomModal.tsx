@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Check,
   Copy,
@@ -18,12 +18,16 @@ import type { RoomSyncStatus } from "../../lib/realtime-sync";
 interface ShareRoomModalProps {
   isOpen: boolean;
   roomId?: string;
+  activeNotebookTitle?: string;
   syncStatus: RoomSyncStatus;
   peers: PeerPresence[];
   displayName: string;
   onChangeDisplayName: (name: string) => void;
   onCreateRoom: () => void;
-  onJoinRoom: (roomCodeOrUrl: string) => void;
+  onJoinRoom: (
+    roomCodeOrUrl: string,
+    options?: { mergeCurrentNotebook?: boolean }
+  ) => void;
   onLeaveRoom: () => void;
   onForceSync?: () => void;
   onClose: () => void;
@@ -32,6 +36,7 @@ interface ShareRoomModalProps {
 export function ShareRoomModal({
   isOpen,
   roomId,
+  activeNotebookTitle,
   syncStatus,
   peers,
   displayName,
@@ -42,15 +47,20 @@ export function ShareRoomModal({
   onForceSync,
   onClose,
 }: ShareRoomModalProps) {
-  const [nameInput, setNameInput] = useState(displayName);
+  const [nameInput, setNameInput] = useState("");
+  const [nameError, setNameError] = useState("");
   const [joinInput, setJoinInput] = useState("");
+  const [mergeCurrentNotebook, setMergeCurrentNotebook] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [syncRequested, setSyncRequested] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (isOpen) {
-      setNameInput(displayName);
+      setNameInput(displayName.trim() === "ฉัน" ? "" : displayName);
+      setNameError("");
       setJoinInput("");
+      setMergeCurrentNotebook(false);
     }
   }, [isOpen, displayName]);
 
@@ -77,11 +87,23 @@ export function ShareRoomModal({
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
+  const ensureValidName = (): string | null => {
+    const trimmed = nameInput.trim();
+    if (!trimmed) {
+      setNameError("กรุณากรอกชื่อของคุณก่อนสร้างหรือเข้าห้อง");
+      nameInputRef.current?.focus();
+      return null;
+    }
+    setNameError("");
+    onChangeDisplayName(trimmed);
+    return trimmed;
+  };
+
   const handleJoinSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const raw = joinInput.trim();
     if (!raw) return;
-    onChangeDisplayName(nameInput.trim() || "ฉัน");
+    if (!ensureValidName()) return;
 
     // Extract ?room=... if user pasted a full URL
     let extracted = raw;
@@ -93,7 +115,7 @@ export function ShareRoomModal({
     } catch {
       // Keep raw room code
     }
-    onJoinRoom(extracted.trim().toUpperCase());
+    onJoinRoom(extracted.trim().toUpperCase(), { mergeCurrentNotebook });
   };
 
   return (
@@ -149,15 +171,32 @@ export function ShareRoomModal({
             </label>
             <div className="flex gap-2">
               <input
+                ref={nameInputRef}
                 id="collab-display-name"
                 type="text"
                 value={nameInput}
-                onChange={(e) => setNameInput(e.target.value)}
-                onBlur={() => onChangeDisplayName(nameInput.trim() || "ฉัน")}
+                onChange={(e) => {
+                  setNameInput(e.target.value);
+                  if (nameError) setNameError("");
+                }}
+                onBlur={() => {
+                  if (nameInput.trim()) {
+                    onChangeDisplayName(nameInput.trim());
+                  }
+                }}
                 placeholder="เช่น พลอย, ต้น, นัท"
-                className="flex-1 rounded-xl border border-line bg-paper px-3.5 py-2 text-sm text-ink focus:border-accent focus:bg-white focus:outline-none"
+                className={`flex-1 rounded-xl border px-3.5 py-2 text-sm text-ink focus:outline-none ${
+                  nameError
+                    ? "border-rose-400 bg-rose-50/40 focus:border-rose-500"
+                    : "border-line bg-paper focus:border-accent focus:bg-white"
+                }`}
               />
             </div>
+            {nameError && (
+              <p className="mt-1.5 text-xs font-medium text-rose-600">
+                {nameError}
+              </p>
+            )}
           </div>
 
           {roomId ? (
@@ -267,7 +306,7 @@ export function ShareRoomModal({
                 <button
                   type="button"
                   onClick={() => {
-                    onChangeDisplayName(nameInput.trim() || "ฉัน");
+                    if (!ensureValidName()) return;
                     onCreateRoom();
                   }}
                   className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-xs font-semibold text-white hover:bg-accent-dark transition-colors shadow-sm"
@@ -299,6 +338,23 @@ export function ShareRoomModal({
                     เข้าห้อง
                   </button>
                 </div>
+
+                {activeNotebookTitle && (
+                  <label className="flex items-start gap-2 pt-1 text-[11px] text-ink cursor-pointer">
+                    <input
+                      id="join-merge-current-checkbox"
+                      type="checkbox"
+                      checked={mergeCurrentNotebook}
+                      onChange={(e) =>
+                        setMergeCurrentNotebook(e.target.checked)
+                      }
+                      className="mt-0.5 accent-teal-700"
+                    />
+                    <span>
+                      รวมงานจากสมุดที่เปิดอยู่นี้เข้าห้องด้วย (กรณีปิด Live ไปแยกทำแล้วกลับมารวม)
+                    </span>
+                  </label>
+                )}
               </form>
             </div>
           )}

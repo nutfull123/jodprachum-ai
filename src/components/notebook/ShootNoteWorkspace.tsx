@@ -26,6 +26,7 @@ import {
 } from "../../types/notebook";
 import { compressImageToDataUrl } from "../../lib/media-utils";
 import {
+  attachNotebookToRoom,
   createEmptyNotebook,
   createGuestRoomNotebook,
   createNotebookPage,
@@ -48,6 +49,7 @@ import {
 } from "../../lib/storage";
 import { downloadTextFile, sanitizeFileName } from "../../lib/export-utils";
 import { GoodNotesCanvas } from "./GoodNotesCanvas";
+import { JoinRoomPromptModal } from "./JoinRoomPromptModal";
 import { NotebookSidebar } from "./NotebookSidebar";
 import { NotebookToolbar } from "./NotebookToolbar";
 import { ShareRoomModal } from "./ShareRoomModal";
@@ -55,7 +57,8 @@ import { ShareRoomModal } from "./ShareRoomModal";
 interface ShootNoteWorkspaceProps {
   notebooks: ShootNotebook[];
   activeNotebookId: string | null;
-  initialRoomCode?: string;
+  pendingJoinRoomCode?: string;
+  onResolvePendingJoinRoom?: () => void;
   sidebarMobileOpen: boolean;
   onCloseSidebarMobile: () => void;
   onSelectNotebook: (id: string) => void;
@@ -66,7 +69,8 @@ interface ShootNoteWorkspaceProps {
 export function ShootNoteWorkspace({
   notebooks,
   activeNotebookId,
-  initialRoomCode,
+  pendingJoinRoomCode,
+  onResolvePendingJoinRoom,
   sidebarMobileOpen,
   onCloseSidebarMobile,
   onSelectNotebook,
@@ -109,7 +113,7 @@ export function ShootNoteWorkspace({
 
   // Live Share / P2P Room state
   const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [collabName, setCollabName] = useState("ฉัน");
+  const [collabName, setCollabName] = useState("");
   const [syncStatus, setSyncStatus] = useState<RoomSyncStatus>("offline");
   const [peers, setPeers] = useState<PeerPresence[]>([]);
   const [savedToast, setSavedToast] = useState(false);
@@ -154,24 +158,6 @@ export function ShootNoteWorkspace({
     },
     [onUpsertNotebook]
   );
-
-  // Handle incoming ?room= code if passed explicitly as prop
-  useEffect(() => {
-    if (!initialRoomCode) return;
-    const existingWithRoom = notebooks.find(
-      (n) => n.roomId === initialRoomCode
-    );
-    if (existingWithRoom) {
-      onSelectNotebook(existingWithRoom.id);
-      return;
-    }
-
-    const joinedNb = createGuestRoomNotebook(initialRoomCode);
-    onUpsertNotebook(joinedNb);
-    saveNotebook(joinedNb).catch(() => undefined);
-    onSelectNotebook(joinedNb.id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialRoomCode]);
 
   // Connect / disconnect MQTT-WSS + BroadcastChannel room sync when activeNotebook.roomId changes
   const activeRoomId = activeNotebook?.roomId;
@@ -231,7 +217,7 @@ export function ShootNoteWorkspace({
 
     createRoomSyncSession({
       roomId: activeRoomId,
-      getDisplayName: () => collabNameRef.current || "ฉัน",
+      getDisplayName: () => collabNameRef.current.trim() || "ฉัน",
       getCurrentNotebook: () => activeNotebookRef.current,
       onFullState: (remoteNb) => {
         if (cancelled) return;
@@ -769,18 +755,47 @@ export function ShootNoteWorkspace({
     }
   };
 
-  const handleJoinRoom = (roomCode: string) => {
+  const handleJoinRoom = (
+    roomCode: string,
+    options?: { mergeCurrentNotebook?: boolean }
+  ) => {
     const clean = roomCode.trim().toUpperCase();
     if (!clean) return;
+
+    if (options?.mergeCurrentNotebook && activeNotebook) {
+      const attached = attachNotebookToRoom(activeNotebook, clean);
+      onUpsertNotebook(attached);
+      saveNotebook(attached).catch(() => undefined);
+      onSelectNotebook(attached.id);
+      setShareModalOpen(false);
+      if (typeof window !== "undefined") {
+        window.history.replaceState(
+          null,
+          "",
+          `/?room=${encodeURIComponent(clean)}`
+        );
+      }
+      return;
+    }
+
     const existing = notebooks.find((n) => n.roomId === clean);
     if (existing) {
       onSelectNotebook(existing.id);
+      setShareModalOpen(false);
+      if (typeof window !== "undefined") {
+        window.history.replaceState(
+          null,
+          "",
+          `/?room=${encodeURIComponent(clean)}`
+        );
+      }
       return;
     }
     const joined = createGuestRoomNotebook(clean);
     onUpsertNotebook(joined);
     saveNotebook(joined).catch(() => undefined);
     onSelectNotebook(joined.id);
+    setShareModalOpen(false);
     if (typeof window !== "undefined") {
       window.history.replaceState(
         null,
@@ -789,6 +804,63 @@ export function ShootNoteWorkspace({
       );
     }
   };
+
+  const handleConfirmPendingJoin = ({
+    displayName,
+    mergeNotebookId,
+  }: {
+    displayName: string;
+    mergeNotebookId?: string;
+  }) => {
+    const cleanName = displayName.trim();
+    if (!cleanName || !pendingJoinRoomCode) return;
+
+    setCollabName(cleanName);
+    collabNameRef.current = cleanName;
+    setDisplayName(cleanName);
+
+    const cleanRoom = pendingJoinRoomCode.trim().toUpperCase();
+    if (mergeNotebookId) {
+      const target = notebooks.find((n) => n.id === mergeNotebookId);
+      if (target) {
+        const attached = attachNotebookToRoom(target, cleanRoom);
+        onUpsertNotebook(attached);
+        saveNotebook(attached).catch(() => undefined);
+        onSelectNotebook(attached.id);
+        onResolvePendingJoinRoom?.();
+        return;
+      }
+    }
+
+    const existing = notebooks.find((n) => n.roomId === cleanRoom);
+    if (existing) {
+      onSelectNotebook(existing.id);
+    } else {
+      const joined = createGuestRoomNotebook(cleanRoom);
+      onUpsertNotebook(joined);
+      saveNotebook(joined).catch(() => undefined);
+      onSelectNotebook(joined.id);
+    }
+    onResolvePendingJoinRoom?.();
+  };
+
+  const handleCancelPendingJoin = () => {
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", "/");
+    }
+    onResolvePendingJoinRoom?.();
+  };
+
+  const candidateLocalNotebooks = useMemo(
+    () =>
+      notebooks.filter(
+        (n) =>
+          n.metaUpdatedAt > 0 ||
+          n.strokes.length > 0 ||
+          n.items.length > 0
+      ),
+    [notebooks]
+  );
 
   const handleLeaveRoom = () => {
     if (!activeNotebook) return;
@@ -1119,6 +1191,7 @@ export function ShootNoteWorkspace({
       <ShareRoomModal
         isOpen={shareModalOpen}
         roomId={activeNotebook?.roomId}
+        activeNotebookTitle={activeNotebook?.title}
         syncStatus={syncStatus}
         peers={peers}
         displayName={collabName}
@@ -1133,6 +1206,14 @@ export function ShootNoteWorkspace({
         onLeaveRoom={handleLeaveRoom}
         onForceSync={() => syncSessionRef.current?.requestSync()}
         onClose={() => setShareModalOpen(false)}
+      />
+
+      <JoinRoomPromptModal
+        roomCode={pendingJoinRoomCode || null}
+        initialDisplayName={collabName}
+        localNotebooks={candidateLocalNotebooks}
+        onConfirm={handleConfirmPendingJoin}
+        onCancel={handleCancelPendingJoin}
       />
     </div>
   );

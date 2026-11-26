@@ -21,7 +21,6 @@ import { buildMindMapTree } from "../lib/mindmap-builder";
 import { formatSeconds } from "../lib/mime";
 import {
   createEmptyNotebook,
-  createGuestRoomNotebook,
   createNotebookFromMeeting,
 } from "../lib/notebook-crdt";
 import { createSampleMeeting } from "../lib/sample-meeting";
@@ -149,6 +148,9 @@ export default function HomePage() {
   // ShootNote notebooks state
   const [notebooks, setNotebooks] = useState<ShootNotebook[]>([]);
   const [activeNotebookId, setActiveNotebookId] = useState<string | null>(null);
+  const [pendingJoinRoomCode, setPendingJoinRoomCode] = useState<
+    string | undefined
+  >(undefined);
 
   // Meeting summarizer state
   const [meetings, setMeetings] = useState<SavedMeeting[]>([]);
@@ -265,27 +267,17 @@ export default function HomePage() {
     const roomParam = params.get("room")?.trim().toUpperCase();
     if (roomParam) {
       setWorkspaceMode("notebook");
+      setPendingJoinRoomCode(roomParam);
     }
 
     listNotebooks()
       .then((rows) => {
-        if (roomParam) {
-          const existing = rows.find((n) => n.roomId === roomParam);
-          if (existing) {
-            setNotebooks(rows);
-            setActiveNotebookId(existing.id);
-          } else {
-            const guestNb = createGuestRoomNotebook(roomParam);
-            saveNotebook(guestNb).catch(() => undefined);
-            setNotebooks([guestNb, ...rows]);
-            setActiveNotebookId(guestNb.id);
-          }
-          return;
-        }
-
         if (rows.length > 0) {
           setNotebooks(rows);
-          setActiveNotebookId(rows[0].id);
+          const matchingRoom = roomParam
+            ? rows.find((n) => n.roomId === roomParam)
+            : null;
+          setActiveNotebookId(matchingRoom ? matchingRoom.id : rows[0].id);
         } else {
           const starter = createStarterNotebook();
           setNotebooks([starter]);
@@ -294,15 +286,9 @@ export default function HomePage() {
         }
       })
       .catch(() => {
-        if (roomParam) {
-          const guestNb = createGuestRoomNotebook(roomParam);
-          setNotebooks([guestNb]);
-          setActiveNotebookId(guestNb.id);
-        } else {
-          const starter = createStarterNotebook();
-          setNotebooks([starter]);
-          setActiveNotebookId(starter.id);
-        }
+        const starter = createStarterNotebook();
+        setNotebooks([starter]);
+        setActiveNotebookId(starter.id);
       });
 
     listMeetings()
@@ -687,6 +673,8 @@ export default function HomePage() {
         <ShootNoteWorkspace
           notebooks={notebooks}
           activeNotebookId={activeNotebookId}
+          pendingJoinRoomCode={pendingJoinRoomCode}
+          onResolvePendingJoinRoom={() => setPendingJoinRoomCode(undefined)}
           sidebarMobileOpen={sidebarMobileOpen}
           onCloseSidebarMobile={() => setSidebarMobileOpen(false)}
           onSelectNotebook={setActiveNotebookId}
