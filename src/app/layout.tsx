@@ -9,9 +9,9 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "จดประชุม AI · ถอดเสียงและสรุปงานแยกหัวข้อ",
+  title: "ShootNote · สมุดจดสไตล์ GoodNotes & ถอดเสียงประชุม AI",
   description:
-    "เว็บแอปถอดเสียงประชุมภาษาไทยด้วย AI สรุปแยกตามหัวข้อ แตกเป็น Task บอร์ดงาน และ Mind Map โต้ตอบได้ ข้อมูลของแต่ละคนเก็บแยกเฉพาะบนเครื่องตัวเอง",
+    "สมุดจดยาวสไตล์ GoodNotes รองรับปากกา iPad ตกแต่ง แนบรูป/คลิป ShortNote บันทึกในเครื่อง แชร์ทำร่วมกันแบบเรียลไทม์ และถอดเสียงสรุปประชุมด้วย AI",
   formatDetection: {
     telephone: false,
   },
@@ -38,7 +38,7 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-        <meta name="apple-mobile-web-app-title" content="จดประชุม AI" />
+        <meta name="apple-mobile-web-app-title" content="ShootNote" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
           rel="preconnect"

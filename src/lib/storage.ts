@@ -1,12 +1,16 @@
 import type { MeetingAnalysis, SavedMeeting } from "../types/meeting";
+import type { ShootNotebook } from "../types/notebook";
 
 const DB_NAME = "jodprachum_local_v1";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_MEETINGS = "meetings";
 const STORE_AUDIO = "audio_blobs";
+const STORE_NOTEBOOKS = "notebooks";
+const STORE_MEDIA = "media_blobs";
 
 const LS_API_KEY = "jodprachum_gemini_key";
 const LS_PASSCODE = "jodprachum_passcode";
+const LS_DISPLAY_NAME = "shootnote_display_name";
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -23,11 +27,22 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_AUDIO)) {
         db.createObjectStore(STORE_AUDIO, { keyPath: "id" });
       }
+      if (!db.objectStoreNames.contains(STORE_NOTEBOOKS)) {
+        db.createObjectStore(STORE_NOTEBOOKS, { keyPath: "id" });
+      }
+      if (!db.objectStoreNames.contains(STORE_MEDIA)) {
+        db.createObjectStore(STORE_MEDIA, { keyPath: "id" });
+      }
     };
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("เปิดฐานข้อมูลในเครื่องไม่สำเร็จ"));
+    request.onerror = () =>
+      reject(request.error || new Error("เปิดฐานข้อมูลในเครื่องไม่สำเร็จ"));
   });
 }
+
+// =========================================================================
+// Meetings & Audio Blobs
+// =========================================================================
 
 export async function listMeetings(): Promise<SavedMeeting[]> {
   if (typeof window === "undefined") return [];
@@ -130,6 +145,107 @@ export async function clearAllMeetings(): Promise<void> {
   });
 }
 
+// =========================================================================
+// ShootNote Notebooks & Media Blobs
+// =========================================================================
+
+export async function listNotebooks(): Promise<ShootNotebook[]> {
+  if (typeof window === "undefined") return [];
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NOTEBOOKS, "readonly");
+    const req = tx.objectStore(STORE_NOTEBOOKS).getAll();
+    req.onsuccess = () => {
+      const rows = (req.result || []) as ShootNotebook[];
+      rows.sort((a, b) => b.updatedAt - a.updatedAt);
+      resolve(rows);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function getNotebook(id: string): Promise<ShootNotebook | null> {
+  if (typeof window === "undefined") return null;
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NOTEBOOKS, "readonly");
+    const req = tx.objectStore(STORE_NOTEBOOKS).get(id);
+    req.onsuccess = () => resolve((req.result as ShootNotebook | undefined) ?? null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function saveNotebook(notebook: ShootNotebook): Promise<void> {
+  if (typeof window === "undefined") return;
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NOTEBOOKS, "readwrite");
+    tx.objectStore(STORE_NOTEBOOKS).put(notebook);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteNotebook(id: string): Promise<void> {
+  if (typeof window === "undefined") return;
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NOTEBOOKS, "readwrite");
+    tx.objectStore(STORE_NOTEBOOKS).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function saveMediaBlob(
+  id: string,
+  blob: Blob,
+  mimeType: string,
+  fileName: string
+): Promise<void> {
+  if (typeof window === "undefined") return;
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_MEDIA, "readwrite");
+    tx.objectStore(STORE_MEDIA).put({ id, blob, mimeType, fileName });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function getMediaBlob(
+  id: string
+): Promise<{ id: string; blob: Blob; mimeType: string; fileName: string } | null> {
+  if (typeof window === "undefined") return null;
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_MEDIA, "readonly");
+    const req = tx.objectStore(STORE_MEDIA).get(id);
+    req.onsuccess = () =>
+      resolve(
+        (req.result as
+          | { id: string; blob: Blob; mimeType: string; fileName: string }
+          | undefined) ?? null
+      );
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function deleteMediaBlob(id: string): Promise<void> {
+  if (typeof window === "undefined") return;
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_MEDIA, "readwrite");
+    tx.objectStore(STORE_MEDIA).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// =========================================================================
+// LocalStorage Settings
+// =========================================================================
+
 export function getStoredApiKey(): string {
   if (typeof window === "undefined") return "";
   return window.localStorage.getItem(LS_API_KEY) || "";
@@ -157,5 +273,20 @@ export function setStoredPasscode(code: string): void {
     window.localStorage.setItem(LS_PASSCODE, trimmed);
   } else {
     window.localStorage.removeItem(LS_PASSCODE);
+  }
+}
+
+export function getDisplayName(): string {
+  if (typeof window === "undefined") return "ฉัน";
+  return window.localStorage.getItem(LS_DISPLAY_NAME) || "";
+}
+
+export function setDisplayName(name: string): void {
+  if (typeof window === "undefined") return;
+  const trimmed = name.trim();
+  if (trimmed) {
+    window.localStorage.setItem(LS_DISPLAY_NAME, trimmed);
+  } else {
+    window.localStorage.removeItem(LS_DISPLAY_NAME);
   }
 }

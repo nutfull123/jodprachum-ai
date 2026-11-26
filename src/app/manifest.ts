@@ -2,10 +2,10 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "จดประชุม AI · ถอดเสียงและสรุปงาน",
-    short_name: "จดประชุม AI",
+    name: "ShootNote · สมุดจด GoodNotes & ถอดเสียงประชุม AI",
+    short_name: "ShootNote",
     description:
-      "เว็บแอปถอดเสียงประชุมภาษาไทย สรุปแยกหัวข้อ บอร์ดงาน และ Mind Map",
+      "สมุดจดสไตล์ GoodNotes รองรับปากกา iPad ตกแต่ง แนบภาพ/คลิป ShortNote แชร์ทำร่วมกันเรียลไทม์ พร้อมถอดเสียงประชุม AI",
     start_url: "/",
     scope: "/",
     display: "standalone",

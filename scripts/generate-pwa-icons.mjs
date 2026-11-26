@@ -41,8 +41,8 @@ function encodePng(width, height, rgba) {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // RGBA
+  ihdr[8] = 8;
+  ihdr[9] = 6;
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;
@@ -51,7 +51,7 @@ function encodePng(width, height, rgba) {
   const raw = Buffer.alloc(height * (stride + 1));
   for (let y = 0; y < height; y += 1) {
     const rowStart = y * (stride + 1);
-    raw[rowStart] = 0; // filter None
+    raw[rowStart] = 0;
     rgba.copy(raw, rowStart + 1, y * stride, (y + 1) * stride);
   }
 
@@ -96,76 +96,62 @@ function renderIcon(size, { rounded, scale = 1.0 }) {
     for (let x = 0; x < w; x += 1) {
       const nx = x / w;
 
-      // Background rounded mask if requested
       if (rounded) {
         const bgDist = distToRoundedBox(nx, ny, 0.5, 0.5, 0.46, 0.46, 0.11);
-        if (bgDist > 0) {
-          continue; // transparent
-        }
+        if (bgDist > 0) continue;
       }
 
-      // Subtle diagonal teal gradient (#0F766E -> #0B5B54)
+      // Rich ShootNote teal gradient (#0F766E -> #0B5B54)
       const grad = (nx + ny) * 0.5;
       let r = Math.round(15 * (1 - grad) + 11 * grad);
       let g = Math.round(118 * (1 - grad) + 91 * grad);
       let b = Math.round(110 * (1 - grad) + 84 * grad);
 
-      // Map normalized coordinates around center with icon scale
       const sx = (nx - 0.5) / scale + 0.5;
       const sy = (ny - 0.5) / scale + 0.5;
 
       let fg = false;
-      let softFg = false;
+      let mintAccent = false;
 
-      // Studio microphone capsule
-      if (distToRoundedBox(sx, sy, 0.5, 0.37, 0.085, 0.15, 0.085) <= 0) {
+      // Crisp ShootNote notepad sheet
+      const sheetDist = distToRoundedBox(sx, sy, 0.47, 0.51, 0.21, 0.25, 0.045);
+      if (sheetDist <= 0) {
         fg = true;
       }
 
-      // U-shaped cradle arc around capsule
-      const arcR = 0.155;
-      const arcCx = 0.5;
-      const arcCy = 0.43;
-      const distCradle = Math.abs(Math.hypot(sx - arcCx, sy - arcCy) - arcR);
-      if (sy >= 0.43 && distCradle <= 0.022) {
-        fg = true;
-      }
-      // Vertical sides of cradle
+      // Teal ruled lines inside sheet
       if (
-        sy >= 0.38 &&
-        sy <= 0.43 &&
-        (Math.abs(sx - (arcCx - arcR)) <= 0.022 ||
-          Math.abs(sx - (arcCx + arcR)) <= 0.022)
+        sheetDist < -0.025 &&
+        sx >= 0.32 &&
+        sx <= 0.58 &&
+        (Math.abs(sy - 0.39) < 0.015 ||
+          Math.abs(sy - 0.49) < 0.015 ||
+          Math.abs(sy - 0.59) < 0.015)
       ) {
-        fg = true;
+        fg = false;
+        mintAccent = true;
       }
 
-      // Mic stand stem + base
-      if (distToSegment(sx, sy, 0.5, 0.585, 0.5, 0.72) <= 0.022) {
-        fg = true;
-      }
-      if (distToSegment(sx, sy, 0.39, 0.72, 0.61, 0.72) <= 0.022) {
-        fg = true;
+      // Stylus / Apple Pencil diagonal stroke crossing bottom-right
+      if (distToSegment(sx, sy, 0.49, 0.65, 0.77, 0.31) <= 0.036) {
+        fg = false;
+        mintAccent = true;
       }
 
-      // Flanking sound wave bars
-      if (
-        distToSegment(sx, sy, 0.25, 0.36, 0.25, 0.50) <= 0.02 ||
-        distToSegment(sx, sy, 0.75, 0.36, 0.75, 0.50) <= 0.02 ||
-        distToSegment(sx, sy, 0.18, 0.40, 0.18, 0.46) <= 0.018 ||
-        distToSegment(sx, sy, 0.82, 0.40, 0.82, 0.46) <= 0.018
-      ) {
-        softFg = true;
-      }
-
-      if (fg) {
+      // Warm amber spark dot (top right)
+      const sparkDist = Math.hypot(sx - 0.72, sy - 0.24);
+      if (sparkDist <= 0.055) {
+        r = 251;
+        g = 191;
+        b = 36;
+      } else if (fg) {
         r = 255;
         g = 255;
         b = 255;
-      } else if (softFg) {
-        r = 186;
-        g = 242;
-        b = 234;
+      } else if (mintAccent) {
+        r = 153;
+        g = 246;
+        b = 228;
       }
 
       const idx = (y * w + x) * 4;
@@ -176,7 +162,6 @@ function renderIcon(size, { rounded, scale = 1.0 }) {
     }
   }
 
-  // 4x box downsample for crisp anti-aliasing
   const out = Buffer.alloc(size * size * 4);
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
@@ -224,4 +209,4 @@ fs.writeFileSync(
   renderIcon(180, { rounded: false, scale: 0.9 })
 );
 
-console.log("Generated PWA icons in public/icons and public/apple-touch-icon.png");
+console.log("Generated ShootNote PWA icons");

@@ -12,8 +12,10 @@
   "dependencies": {
     "lucide-react": "^0.475.0",
     "next": "^15.3.0",
+    "perfect-freehand": "^1.2.3",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "trystero": "^0.27.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",

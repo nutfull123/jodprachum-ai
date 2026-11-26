@@ -1,32 +1,39 @@
 "use client";
 
 import {
+  BookOpen,
   KeyRound,
   Menu,
   Mic,
+  PenTool,
   Plus,
-  ShieldCheck,
   Smartphone,
   Sparkles,
 } from "lucide-react";
 
+export type WorkspaceMode = "notebook" | "meeting";
+
 interface HeaderBarProps {
+  workspaceMode: WorkspaceMode;
   hasServerKey: boolean;
   hasUserKey: boolean;
   isStandalone: boolean;
+  onChangeWorkspace: (mode: WorkspaceMode) => void;
   onToggleSidebar: () => void;
-  onNewMeeting: () => void;
+  onNewAction: () => void;
   onLoadSample: () => void;
   onOpenApiModal: () => void;
   onOpenInstallModal: () => void;
 }
 
 export function HeaderBar({
+  workspaceMode,
   hasServerKey,
   hasUserKey,
   isStandalone,
+  onChangeWorkspace,
   onToggleSidebar,
-  onNewMeeting,
+  onNewAction,
   onLoadSample,
   onOpenApiModal,
   onOpenInstallModal,
@@ -35,59 +42,83 @@ export function HeaderBar({
 
   return (
     <header className="no-print safe-top-header sticky top-0 z-30 border-b border-line bg-white/95 backdrop-blur">
-      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-2 px-3 py-3 sm:px-6">
+      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-2 px-3 py-2.5 sm:px-6">
         <div className="flex items-center gap-2.5 min-w-0">
           <button
             type="button"
             onClick={onToggleSidebar}
             className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-paper text-ink hover:bg-[#efede6] lg:hidden"
-            aria-label="เปิดรายการประวัติประชุม"
+            aria-label="เปิดแถบรายการ"
           >
             <Menu className="h-4 w-4" />
           </button>
 
           <button
             type="button"
-            onClick={onNewMeeting}
-            className="flex items-center gap-2 text-left group min-w-0"
+            onClick={() => onChangeWorkspace("notebook")}
+            className="flex items-center gap-2 text-left group shrink-0"
           >
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-white shadow-sm group-hover:bg-accent-dark transition-colors">
-              <Mic className="h-4 w-4" />
+              <PenTool className="h-4 w-4" />
             </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-sm sm:text-base tracking-tight text-ink truncate">
-                  จดประชุม AI
-                </span>
-                <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent">
-                  <ShieldCheck className="h-3 w-3" />
-                  เก็บแยกเฉพาะเครื่องคุณ
-                </span>
-              </div>
-              <p className="hidden md:block text-xs text-muted truncate">
-                ถอดเสียง · สรุปแยกหัวข้อ · บอร์ดงาน · Mind Map
+            <div>
+              <span className="font-bold text-base tracking-tight text-ink block whitespace-nowrap">
+                ShootNote
+              </span>
+              <p className="hidden xl:block text-[11px] text-muted whitespace-nowrap">
+                GoodNotes Canvas · ShortNote · ถอดเสียง AI
               </p>
             </div>
           </button>
+
+          {/* Desktop Workspace Switcher */}
+          <div className="hidden lg:inline-flex items-center rounded-xl bg-paper p-1 border border-line ml-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => onChangeWorkspace("notebook")}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition-all ${
+                workspaceMode === "notebook"
+                  ? "bg-white text-accent-dark shadow-sm"
+                  : "text-muted hover:text-ink"
+              }`}
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+              <span>สมุดจด ShootNote</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeWorkspace("meeting")}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition-all ${
+                workspaceMode === "meeting"
+                  ? "bg-white text-accent-dark shadow-sm"
+                  : "text-muted hover:text-ink"
+              }`}
+            >
+              <Mic className="h-3.5 w-3.5" />
+              <span>ถอดเสียงประชุม AI</span>
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={onLoadSample}
-            className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-medium text-ink hover:bg-[#efede6] transition-colors"
-          >
-            <Sparkles className="h-3.5 w-3.5 text-amber-600" />
-            ดูตัวอย่างสรุปประชุม
-          </button>
+          {workspaceMode === "meeting" && (
+            <button
+              type="button"
+              onClick={onLoadSample}
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-medium text-ink hover:bg-[#efede6] transition-colors"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-amber-600" />
+              ดูตัวอย่างประชุม
+            </button>
+          )}
 
           {!isStandalone && (
             <button
               type="button"
               onClick={onOpenInstallModal}
               className="inline-flex h-8 sm:h-auto items-center justify-center gap-1 rounded-lg border border-line bg-paper px-2 sm:px-3 sm:py-1.5 text-xs font-medium text-ink hover:bg-[#efede6] transition-colors"
-              title="เพิ่มเว็บแอปลงหน้าจอมือถือ"
-              aria-label="เพิ่มเว็บแอปลงหน้าจอมือถือ"
+              title="เพิ่ม ShootNote ลงหน้าจอมือถือ / iPad"
+              aria-label="เพิ่ม ShootNote ลงหน้าจอมือถือ"
             >
               <Smartphone className="h-3.5 w-3.5 text-accent" />
               <span className="hidden sm:inline">เพิ่มลงมือถือ</span>
@@ -96,11 +127,13 @@ export function HeaderBar({
 
           <button
             type="button"
-            onClick={onNewMeeting}
-            className="inline-flex items-center gap-1 rounded-lg bg-accent px-2.5 sm:px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dark transition-colors shadow-sm"
+            onClick={onNewAction}
+            className="inline-flex items-center gap-1 rounded-lg bg-accent px-2.5 sm:px-3 py-1.5 text-xs font-semibold text-white hover:bg-accent-dark transition-colors shadow-sm"
           >
             <Plus className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">ประชุมใหม่</span>
+            <span className="hidden sm:inline">
+              {workspaceMode === "notebook" ? "สร้างสมุดใหม่" : "ประชุมใหม่"}
+            </span>
             <span className="sm:hidden">ใหม่</span>
           </button>
 
@@ -116,14 +149,42 @@ export function HeaderBar({
             <KeyRound className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">
               {hasUserKey
-                ? "ใช้คีย์ส่วนตัวของคุณ"
+                ? "คีย์ AI พร้อม"
                 : hasServerKey
-                  ? "คีย์กลางพร้อมใช้"
+                  ? "คีย์กลางพร้อม"
                   : "ตั้งค่าคีย์ AI ฟรี"}
             </span>
             <span className="sm:hidden">คีย์ AI</span>
           </button>
         </div>
+      </div>
+
+      {/* Mobile / Tablet Compact Workspace Switcher */}
+      <div className="lg:hidden border-t border-line bg-paper/80 px-3 py-1.5 grid grid-cols-2 gap-1.5">
+        <button
+          type="button"
+          onClick={() => onChangeWorkspace("notebook")}
+          className={`inline-flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
+            workspaceMode === "notebook"
+              ? "bg-white text-accent-dark shadow-sm border border-line"
+              : "text-muted"
+          }`}
+        >
+          <BookOpen className="h-3.5 w-3.5" />
+          <span>สมุดจด ShootNote</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => onChangeWorkspace("meeting")}
+          className={`inline-flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
+            workspaceMode === "meeting"
+              ? "bg-white text-accent-dark shadow-sm border border-line"
+              : "text-muted"
+          }`}
+        >
+          <Mic className="h-3.5 w-3.5" />
+          <span>ถอดเสียงประชุม AI</span>
+        </button>
       </div>
     </header>
   );

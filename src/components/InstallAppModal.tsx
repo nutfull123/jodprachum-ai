@@ -130,7 +130,7 @@ export function InstallAppModal({
                 </span>
                 <span>
                   กดปุ่ม <strong>เพิ่ม (Add)</strong> มุมขวาบน ก็จะได้ไอคอน{" "}
-                  <strong>จดประชุม AI</strong> บนหน้าจอมือถือทันที
+                  <strong>ShootNote</strong> บนหน้าจอมือถือ / iPad ทันที
                 </span>
               </li>
             </ol>

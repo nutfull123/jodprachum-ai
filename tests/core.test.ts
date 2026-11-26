@@ -15,7 +15,14 @@ import {
   GEMINI_RESPONSE_SCHEMA,
   selectBestFallbackModels,
 } from "../src/lib/gemini-server.ts";
+import { hitTestStroke } from "../src/lib/media-utils.ts";
+import {
+  createNotebookFromMeeting,
+  mergeNotebook,
+  strokePointsToSvgPath,
+} from "../src/lib/notebook-crdt.ts";
 import type { SavedMeeting } from "../src/types/meeting.ts";
+import type { ShootNotebook } from "../src/types/notebook.ts";
 
 test("normalizeAudioMimeType strips codecs and normalizes browser/device audio formats", () => {
   assert.equal(
@@ -285,4 +292,178 @@ test("DEFAULT_MODEL_CANDIDATES starts with gemini-3.8-flash and selectBestFallba
     "gemini-3.8-flash-lite",
     "gemini-3.8-pro",
   ]);
+});
+
+test("mergeNotebook merges concurrent strokes, sticky edits, tombstones, and max pageHeight", () => {
+  const base: ShootNotebook = {
+    id: "nb-1",
+    kind: "notebook",
+    title: "เดิม",
+    paperTemplate: "lined",
+    pageHeight: 1600,
+    strokes: [
+      {
+        id: "s1",
+        tool: "pen",
+        color: "#000000",
+        size: 5,
+        opacity: 1,
+        isStylus: true,
+        points: [
+          [10, 10, 0.5],
+          [50, 50, 0.6],
+        ],
+        updatedAt: 100,
+      },
+    ],
+    items: [
+      {
+        id: "i1",
+        type: "sticky",
+        x: 20,
+        y: 20,
+        width: 200,
+        height: 150,
+        zIndex: 1,
+        text: "ข้อความเดิม",
+        updatedAt: 100,
+      },
+    ],
+    metaUpdatedAt: 100,
+    createdAt: 100,
+    updatedAt: 100,
+  };
+
+  const remote: ShootNotebook = {
+    ...base,
+    title: "สมุดแชร์ล่าสุด",
+    paperTemplate: "grid",
+    pageHeight: 2600,
+    metaUpdatedAt: 250,
+    strokes: [
+      { ...base.strokes[0], deleted: true, updatedAt: 220 },
+      {
+        id: "s2",
+        tool: "highlighter",
+        color: "#FEF08A",
+        size: 20,
+        opacity: 0.36,
+        isStylus: false,
+        points: [
+          [100, 100, 0.5],
+          [200, 100, 0.5],
+        ],
+        updatedAt: 230,
+      },
+    ],
+    items: [
+      { ...base.items[0], text: "ข้อความที่เพื่อนแก้", updatedAt: 240 },
+    ],
+  };
+
+  const merged = mergeNotebook(base, remote);
+  assert.equal(merged.title, "สมุดแชร์ล่าสุด");
+  assert.equal(merged.paperTemplate, "grid");
+  assert.equal(merged.pageHeight, 2600);
+  assert.equal(merged.strokes.length, 2);
+  assert.equal(merged.strokes.find((s) => s.id === "s1")?.deleted, true);
+  assert.equal(merged.items[0].text, "ข้อความที่เพื่อนแก้");
+});
+
+test("hitTestStroke detects eraser touch near stroke segments", () => {
+  const stroke = {
+    id: "s1",
+    tool: "pen" as const,
+    color: "#1C1B18",
+    size: 6,
+    opacity: 1,
+    isStylus: true,
+    points: [
+      [100, 100, 0.5] as [number, number, number],
+      [200, 100, 0.5] as [number, number, number],
+    ],
+    updatedAt: 100,
+  };
+
+  assert.equal(hitTestStroke(stroke, 150, 106, 12), true);
+  assert.equal(hitTestStroke(stroke, 150, 160, 12), false);
+});
+
+test("strokePointsToSvgPath generates closed SVG path using perfect-freehand", () => {
+  const path = strokePointsToSvgPath(
+    [
+      [10, 10, 0.3],
+      [40, 25, 0.6],
+      [80, 40, 0.8],
+    ],
+    { size: 8, tool: "pen", isStylus: true }
+  );
+  assert.ok(path.startsWith("M "));
+  assert.ok(path.endsWith(" Z"));
+});
+
+test("createNotebookFromMeeting creates non-overlapping meeting cards ready for annotation", () => {
+  const meeting: SavedMeeting = {
+    id: "m-test",
+    createdAt: 1000,
+    updatedAt: 1000,
+    sourceType: "demo",
+    fileName: "demo.m4a",
+    hasLocalAudio: false,
+    analysis: {
+      meetingTitle: "ประชุมสรุปงาน Q4",
+      executiveSummary: "เห็นชอบเปิดตัวระบบใหม่",
+      participants: ["พลอย", "ต้น"],
+      keyDecisions: ["เปิดใช้ 1 ธ.ค."],
+      blockers: [],
+      topics: [
+        {
+          id: "t1",
+          title: "การตลาด",
+          startTime: "00:00",
+          endTime: "05:00",
+          summary: "เตรียมป้าย QR",
+          keyPoints: ["ส่งโรงพิมพ์"],
+          decisions: ["อนุมัติงบ"],
+          colorIndex: 0,
+        },
+        {
+          id: "t2",
+          title: "ระบบหลังบ้าน",
+          startTime: "05:01",
+          endTime: "10:00",
+          summary: "ทดสอบโหลด",
+          keyPoints: ["Load test"],
+          decisions: [],
+          colorIndex: 1,
+        },
+      ],
+      tasks: [
+        {
+          id: "k1",
+          title: "ส่งไฟล์พิมพ์",
+          assignee: "พลอย",
+          dueDate: "พุธนี้",
+          priority: "high",
+          status: "todo",
+          topicId: "t1",
+        },
+      ],
+      transcript: [],
+      mindMap: { id: "root", label: "ประชุม", nodeType: "root", children: [] },
+    },
+  };
+
+  const nb = createNotebookFromMeeting(meeting);
+  assert.equal(nb.title, "ประชุมสรุปงาน Q4");
+  assert.ok(nb.items.length >= 4);
+  for (let i = 0; i < nb.items.length; i += 1) {
+    for (let j = i + 1; j < nb.items.length; j += 1) {
+      const a = nb.items[i];
+      const b = nb.items[j];
+      const ox = a.x < b.x + b.width && a.x + a.width > b.x;
+      const oy = a.y < b.y + b.height && a.y + a.height > b.y;
+      assert.equal(ox && oy, false, `Items ${a.id} and ${b.id} overlap`);
+    }
+  }
 });
