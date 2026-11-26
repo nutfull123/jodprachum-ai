@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpToLine,
   Edit3,
+  FilePlus2,
   Maximize2,
   Minus,
   Plus,
@@ -13,8 +14,10 @@ import {
 } from "lucide-react";
 import {
   STICKY_COLORS,
+  isDarkPaperTemplate,
   type CanvasItem,
   type InkStroke,
+  type NotebookPage,
   type NotebookTool,
   type PaperTemplate,
   type PeerPresence,
@@ -27,6 +30,10 @@ import { getMediaBlob } from "../../lib/storage";
 
 interface GoodNotesCanvasProps {
   notebook: ShootNotebook;
+  activePage: NotebookPage;
+  isFirstPage: boolean;
+  pageIndex: number;
+  totalPages: number;
   tool: NotebookTool;
   color: string;
   size: number;
@@ -39,6 +46,7 @@ interface GoodNotesCanvasProps {
   onDeleteItem: (itemId: string) => void;
   onUpdateQuickBody: (quickBody: string) => void;
   onExtendPage: () => void;
+  onAddPage: () => void;
   onCursorMove: (x: number, y: number) => void;
 }
 
@@ -76,6 +84,25 @@ function getTemplateStyle(tpl: PaperTemplate): React.CSSProperties {
         backgroundColor: "#FFFDF9",
         backgroundImage:
           "linear-gradient(90deg, transparent 238px, #FDA4AF 238px, #FDA4AF 240px, transparent 240px), repeating-linear-gradient(to bottom, transparent 0px, transparent 35px, #E7E5E4 35px, #E7E5E4 36px)",
+      };
+    case "dark_lined":
+      return {
+        backgroundColor: "#181B20",
+        backgroundImage:
+          "linear-gradient(90deg, transparent 83px, #7F1D1D 83px, #7F1D1D 84.5px, transparent 84.5px), repeating-linear-gradient(to bottom, transparent 0px, transparent 35px, #2A303B 35px, #2A303B 36px)",
+      };
+    case "dark_grid":
+      return {
+        backgroundColor: "#181B20",
+        backgroundImage:
+          "linear-gradient(to right, #2A303B 1px, transparent 1px), linear-gradient(to bottom, #2A303B 1px, transparent 1px)",
+        backgroundSize: "28px 28px",
+      };
+    case "dark_dotted":
+      return {
+        backgroundColor: "#181B20",
+        backgroundImage: "radial-gradient(#3B4252 1.4px, transparent 1.4px)",
+        backgroundSize: "24px 24px",
       };
     case "blank":
     default:
@@ -133,7 +160,10 @@ function MediaItemPlayer({ item }: { item: CanvasItem }) {
   }
 
   return (
-    <div className="h-full w-full flex flex-col justify-center gap-1.5 rounded-xl border border-line bg-white p-3 shadow-sm">
+    <div
+      data-paper-card="true"
+      className="h-full w-full flex flex-col justify-center gap-1.5 rounded-xl border border-line bg-white p-3 shadow-sm"
+    >
       <p className="text-xs font-semibold text-ink truncate">
         🎵 {item.fileName || "คลิปเสียง"}
       </p>
@@ -148,6 +178,10 @@ function MediaItemPlayer({ item }: { item: CanvasItem }) {
 
 export function GoodNotesCanvas({
   notebook,
+  activePage,
+  isFirstPage,
+  pageIndex,
+  totalPages,
   tool,
   color,
   size,
@@ -160,6 +194,7 @@ export function GoodNotesCanvas({
   onDeleteItem,
   onUpdateQuickBody,
   onExtendPage,
+  onAddPage,
   onCursorMove,
 }: GoodNotesCanvasProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -189,6 +224,12 @@ export function GoodNotesCanvas({
     null
   );
 
+  // Clear selection when switching page
+  useEffect(() => {
+    setSelectedItemId(null);
+    setEditingItemId(null);
+  }, [activePage.id]);
+
   // Responsive fit-to-width scaling
   useEffect(() => {
     const el = viewportRef.current;
@@ -211,31 +252,40 @@ export function GoodNotesCanvas({
   }, [manualScale]);
 
   const visibleStrokes = useMemo(
-    () => notebook.strokes.filter((s) => !s.deleted),
-    [notebook.strokes]
+    () =>
+      notebook.strokes.filter(
+        (s) =>
+          !s.deleted &&
+          (s.pageId === activePage.id || (!s.pageId && isFirstPage))
+      ),
+    [notebook.strokes, activePage.id, isFirstPage]
   );
 
   const visibleItems = useMemo(() => {
     return notebook.items
-      .filter((i) => !i.deleted)
+      .filter(
+        (i) =>
+          !i.deleted &&
+          (i.pageId === activePage.id || (!i.pageId && isFirstPage))
+      )
       .map((i) => (draftItemOverlay?.id === i.id ? draftItemOverlay : i))
       .sort((a, b) => a.zIndex - b.zIndex);
-  }, [notebook.items, draftItemOverlay]);
+  }, [notebook.items, activePage.id, isFirstPage, draftItemOverlay]);
 
   const maxZIndex = useMemo(
     () => Math.max(1, ...notebook.items.map((i) => i.zIndex || 1)),
     [notebook.items]
   );
 
+  const pageHeight = activePage.pageHeight || 1600;
+  const darkPaper = isDarkPaperTemplate(activePage.paperTemplate);
+
   const toCanvasCoords = (clientX: number, clientY: number) => {
     const rect = surfaceRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
     return {
       x: Math.max(0, Math.min(VIRTUAL_WIDTH, (clientX - rect.left) / scale)),
-      y: Math.max(
-        0,
-        Math.min(notebook.pageHeight, (clientY - rect.top) / scale)
-      ),
+      y: Math.max(0, Math.min(pageHeight, (clientY - rect.top) / scale)),
     };
   };
 
@@ -249,12 +299,10 @@ export function GoodNotesCanvas({
   }, [livePoints, size, tool, liveStylus]);
 
   const handleSurfacePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    // Ignore item controls
     if ((e.target as HTMLElement).closest("[data-canvas-item='true']")) {
       return;
     }
 
-    // Deselect when clicking blank canvas
     setSelectedItemId(null);
     setEditingItemId(null);
 
@@ -302,7 +350,6 @@ export function GoodNotesCanvas({
       onCursorMove(x, y);
     }
 
-    // Handle active item move/resize
     if (itemActionRef.current) {
       const act = itemActionRef.current;
       const dx = (e.clientX - act.startClientX) / scale;
@@ -312,13 +359,25 @@ export function GoodNotesCanvas({
         act.mode === "move"
           ? {
               ...act.item,
-              x: Math.max(0, Math.min(VIRTUAL_WIDTH - 40, Math.round(act.item.x + dx))),
-              y: Math.max(0, Math.min(notebook.pageHeight - 40, Math.round(act.item.y + dy))),
+              x: Math.max(
+                0,
+                Math.min(VIRTUAL_WIDTH - 40, Math.round(act.item.x + dx))
+              ),
+              y: Math.max(
+                0,
+                Math.min(pageHeight - 40, Math.round(act.item.y + dy))
+              ),
               updatedAt: Date.now(),
             }
           : {
               ...act.item,
-              width: Math.max(64, Math.min(VIRTUAL_WIDTH - act.item.x, Math.round(act.item.width + dx))),
+              width: Math.max(
+                64,
+                Math.min(
+                  VIRTUAL_WIDTH - act.item.x,
+                  Math.round(act.item.width + dx)
+                )
+              ),
               height: Math.max(48, Math.round(act.item.height + dy)),
               updatedAt: Date.now(),
             };
@@ -351,7 +410,9 @@ export function GoodNotesCanvas({
       isStylus && Number.isFinite(e.pressure) && e.pressure > 0
         ? e.pressure
         : 0.5;
-    setLivePoints((prev) => (prev ? [...prev, [x, y, pressure]] : [[x, y, pressure]]));
+    setLivePoints((prev) =>
+      prev ? [...prev, [x, y, pressure]] : [[x, y, pressure]]
+    );
   };
 
   const finishPointerInteraction = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -377,6 +438,7 @@ export function GoodNotesCanvas({
           typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
             ? crypto.randomUUID()
             : `str-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        pageId: activePage.id,
         tool: tool === "highlighter" ? "highlighter" : "pen",
         color,
         size,
@@ -405,24 +467,28 @@ export function GoodNotesCanvas({
         className="mx-auto transition-transform duration-100"
         style={{
           width: `${Math.round(VIRTUAL_WIDTH * scale)}px`,
-          height: `${Math.round(notebook.pageHeight * scale)}px`,
+          height: `${Math.round(pageHeight * scale)}px`,
         }}
       >
         <div
           ref={surfaceRef}
+          data-paper-surface="true"
+          data-dark-paper={darkPaper ? "true" : "false"}
           onPointerDown={handleSurfacePointerDown}
           onPointerMove={handleSurfacePointerMove}
           onPointerUp={finishPointerInteraction}
           onPointerCancel={finishPointerInteraction}
           style={{
             width: `${VIRTUAL_WIDTH}px`,
-            height: `${notebook.pageHeight}px`,
+            height: `${pageHeight}px`,
             transform: `scale(${scale})`,
             transformOrigin: "top left",
             touchAction: drawingTouchAction,
-            ...getTemplateStyle(notebook.paperTemplate),
+            ...getTemplateStyle(activePage.paperTemplate),
           }}
-          className={`relative rounded-2xl border border-[#D8D4C9] shadow-md overflow-hidden ${
+          className={`relative rounded-2xl border shadow-md overflow-hidden ${
+            darkPaper ? "border-[#2F3643]" : "border-[#D8D4C9]"
+          } ${
             tool === "pen" || tool === "highlighter"
               ? "cursor-crosshair"
               : tool === "eraser"
@@ -430,11 +496,21 @@ export function GoodNotesCanvas({
                 : "cursor-default"
           }`}
         >
-          {/* ShortNote Rapid Capture Strip */}
-          {notebook.kind === "shortnote" && (
+          {/* Page watermark badge */}
+          <div
+            className={`pointer-events-none absolute right-5 top-3 z-10 font-mono text-[11px] font-medium ${
+              darkPaper ? "text-slate-500" : "text-stone-400"
+            }`}
+          >
+            หน้า {pageIndex + 1} / {totalPages}
+          </div>
+
+          {/* ShortNote Rapid Capture Strip (shown on Page 1 of ShortNotes) */}
+          {notebook.kind === "shortnote" && isFirstPage && (
             <div
               data-canvas-item="true"
-              className="relative z-20 mx-6 mt-6 rounded-2xl border border-amber-200 bg-amber-50/90 p-4 shadow-sm space-y-2"
+              data-paper-card="true"
+              className="relative z-20 mx-6 mt-6 rounded-2xl border border-amber-200 bg-[#FFFBEB] p-4 shadow-sm space-y-2"
             >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-amber-900">
@@ -446,12 +522,12 @@ export function GoodNotesCanvas({
                 onChange={(e) => onUpdateQuickBody(e.target.value)}
                 rows={3}
                 placeholder="จดไอเดียเร่งด่วน รายการซื้อของ หรือโน้ตสั้นๆ ที่นี่..."
-                className="w-full resize-y rounded-xl border border-amber-200 bg-white/95 px-3.5 py-2.5 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none"
+                className="w-full resize-y rounded-xl border border-amber-200 bg-white px-3.5 py-2.5 text-sm text-[#1C1B18] placeholder:text-stone-400 focus:border-accent focus:outline-none"
               />
             </div>
           )}
 
-          {/* Items Layer (Text, Sticky, Stickers, Shapes, Images, Video/Audio Clips, Meeting Cards) */}
+          {/* Items Layer */}
           {visibleItems.map((item) => {
             const isSelected = selectedItemId === item.id;
             const isEditing = editingItemId === item.id;
@@ -465,6 +541,7 @@ export function GoodNotesCanvas({
               <div
                 key={item.id}
                 data-canvas-item="true"
+                data-paper-card="true"
                 style={{
                   left: `${item.x}px`,
                   top: `${item.y}px`,
@@ -477,7 +554,9 @@ export function GoodNotesCanvas({
                 onPointerDown={(e) => {
                   if (tool !== "select" && !isSelected) return;
                   if (
-                    (e.target as HTMLElement).closest("[data-item-control='true']") ||
+                    (e.target as HTMLElement).closest(
+                      "[data-item-control='true']"
+                    ) ||
                     isEditing
                   ) {
                     return;
@@ -504,7 +583,7 @@ export function GoodNotesCanvas({
                     : ""
                 }`}
               >
-                {/* Floating Item Mini-Toolbar when selected */}
+                {/* Floating Item Mini-Toolbar */}
                 {isSelected && (
                   <div
                     data-item-control="true"
@@ -516,7 +595,7 @@ export function GoodNotesCanvas({
                         onClick={() =>
                           setEditingItemId(isEditing ? null : item.id)
                         }
-                        className="rounded-md px-1.5 py-1 text-[11px] font-medium text-ink hover:bg-paper inline-flex items-center gap-1"
+                        className="rounded-md px-1.5 py-1 text-[11px] font-medium text-[#1C1B18] hover:bg-stone-100 inline-flex items-center gap-1"
                       >
                         <Edit3 className="h-3 w-3 text-accent" />
                         <span>{isEditing ? "เสร็จ" : "แก้ข้อความ"}</span>
@@ -524,7 +603,7 @@ export function GoodNotesCanvas({
                     )}
 
                     {(item.type === "sticky" || item.type === "shape") && (
-                      <div className="flex items-center gap-1 px-1 border-l border-line">
+                      <div className="flex items-center gap-1 px-1 border-l border-stone-200">
                         {STICKY_COLORS.slice(0, 5).map((sc) => (
                           <button
                             key={sc.bg}
@@ -545,7 +624,7 @@ export function GoodNotesCanvas({
                     )}
 
                     {editableTextItem && (
-                      <div className="flex items-center gap-0.5 px-1 border-l border-line">
+                      <div className="flex items-center gap-0.5 px-1 border-l border-stone-200">
                         <button
                           type="button"
                           onClick={() =>
@@ -555,7 +634,7 @@ export function GoodNotesCanvas({
                               updatedAt: Date.now(),
                             })
                           }
-                          className="rounded p-1 text-muted hover:bg-paper hover:text-ink"
+                          className="rounded p-1 text-stone-600 hover:bg-stone-100"
                           title="ลดขนาดตัวอักษร"
                         >
                           <Minus className="h-3 w-3" />
@@ -569,7 +648,7 @@ export function GoodNotesCanvas({
                               updatedAt: Date.now(),
                             })
                           }
-                          className="rounded p-1 text-muted hover:bg-paper hover:text-ink"
+                          className="rounded p-1 text-stone-600 hover:bg-stone-100"
                           title="เพิ่มขนาดตัวอักษร"
                         >
                           <Plus className="h-3 w-3" />
@@ -586,7 +665,7 @@ export function GoodNotesCanvas({
                           updatedAt: Date.now(),
                         })
                       }
-                      className="rounded p-1 text-muted hover:bg-paper hover:text-ink border-l border-line pl-1.5"
+                      className="rounded p-1 text-stone-600 hover:bg-stone-100 border-l border-stone-200 pl-1.5"
                       title="ย้ายมาด้านหน้า"
                     >
                       <ArrowUpToLine className="h-3.5 w-3.5" />
@@ -607,19 +686,21 @@ export function GoodNotesCanvas({
                   </div>
                 )}
 
-                {/* Item Content Rendering */}
                 {item.type === "sticker" && (
                   <div className="h-full w-full flex flex-col items-center justify-center">
                     <span
                       style={{
-                        fontSize: `${Math.max(36, Math.min(item.width, item.height) * 0.62)}px`,
+                        fontSize: `${Math.max(
+                          36,
+                          Math.min(item.width, item.height) * 0.62
+                        )}px`,
                       }}
                       className="leading-none drop-shadow-sm"
                     >
                       {item.stickerEmoji || "⭐"}
                     </span>
                     {item.stickerLabel && (
-                      <span className="mt-1 rounded-full bg-white/90 border border-line px-2 py-0.5 text-[11px] font-semibold text-ink shadow-sm">
+                      <span className="mt-1 rounded-full bg-white border border-stone-200 px-2 py-0.5 text-[11px] font-semibold text-[#1C1B18] shadow-sm">
                         {item.stickerLabel}
                       </span>
                     )}
@@ -659,12 +740,12 @@ export function GoodNotesCanvas({
                         onBlur={() => setEditingItemId(null)}
                         placeholder="พิมพ์หัวข้อในกรอบ..."
                         style={{ fontSize: `${item.fontSize || 16}px` }}
-                        className="h-full w-full resize-none bg-transparent text-center font-semibold text-ink focus:outline-none"
+                        className="h-full w-full resize-none bg-transparent text-center font-semibold text-[#1C1B18] focus:outline-none"
                       />
                     ) : (
                       <p
                         style={{ fontSize: `${item.fontSize || 16}px` }}
-                        className="font-semibold text-ink text-center whitespace-pre-wrap break-words"
+                        className="font-semibold text-[#1C1B18] text-center whitespace-pre-wrap break-words"
                       >
                         {item.text || ""}
                       </p>
@@ -673,7 +754,13 @@ export function GoodNotesCanvas({
                 )}
 
                 {item.type === "text" && (
-                  <div className="h-full w-full rounded-xl bg-white/75 border border-transparent hover:border-line/80 p-2.5">
+                  <div
+                    className={`h-full w-full rounded-xl border border-transparent p-2.5 ${
+                      darkPaper
+                        ? "bg-slate-800/70 hover:border-slate-600"
+                        : "bg-white/80 hover:border-stone-300"
+                    }`}
+                  >
                     {isEditing ? (
                       <textarea
                         autoFocus
@@ -690,7 +777,7 @@ export function GoodNotesCanvas({
                         placeholder="พิมพ์ข้อความ..."
                         style={{
                           fontSize: `${item.fontSize || 18}px`,
-                          color: item.color || "#1C1B18",
+                          color: darkPaper ? "#F3F4F6" : item.color || "#1C1B18",
                         }}
                         className="h-full w-full resize-none bg-transparent leading-relaxed focus:outline-none"
                       />
@@ -698,7 +785,7 @@ export function GoodNotesCanvas({
                       <p
                         style={{
                           fontSize: `${item.fontSize || 18}px`,
-                          color: item.color || "#1C1B18",
+                          color: darkPaper ? "#F3F4F6" : item.color || "#1C1B18",
                         }}
                         className="leading-relaxed whitespace-pre-wrap break-words"
                       >
@@ -716,7 +803,7 @@ export function GoodNotesCanvas({
                     className="h-full w-full rounded-2xl border border-black/10 p-4 shadow-sm flex flex-col overflow-hidden"
                   >
                     {item.title && (
-                      <h4 className="text-sm font-bold text-ink mb-1.5 border-b border-black/10 pb-1.5 shrink-0">
+                      <h4 className="text-sm font-bold text-[#1C1B18] mb-1.5 border-b border-black/10 pb-1.5 shrink-0">
                         {item.title}
                       </h4>
                     )}
@@ -734,12 +821,12 @@ export function GoodNotesCanvas({
                         }
                         onBlur={() => setEditingItemId(null)}
                         style={{ fontSize: `${item.fontSize || 15}px` }}
-                        className="flex-1 w-full resize-none bg-transparent text-ink leading-relaxed focus:outline-none"
+                        className="flex-1 w-full resize-none bg-transparent text-[#1C1B18] leading-relaxed focus:outline-none"
                       />
                     ) : (
                       <div
                         style={{ fontSize: `${item.fontSize || 15}px` }}
-                        className="flex-1 overflow-y-auto text-ink leading-relaxed whitespace-pre-wrap break-words"
+                        className="flex-1 overflow-y-auto text-[#1C1B18] leading-relaxed whitespace-pre-wrap break-words"
                       >
                         {item.text || "ดับเบิลคลิกเพื่อเขียนโน้ต..."}
                       </div>
@@ -748,7 +835,7 @@ export function GoodNotesCanvas({
                 )}
 
                 {item.type === "image" && (
-                  <div className="h-full w-full rounded-xl overflow-hidden border border-line bg-white shadow-sm p-1.5">
+                  <div className="h-full w-full rounded-xl overflow-hidden border border-stone-200 bg-white shadow-sm p-1.5">
                     {item.dataUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -764,7 +851,6 @@ export function GoodNotesCanvas({
                   <MediaItemPlayer item={item} />
                 )}
 
-                {/* Resize Handle */}
                 {isSelected && (
                   <div
                     data-item-control="true"
@@ -786,12 +872,12 @@ export function GoodNotesCanvas({
             );
           })}
 
-          {/* Vector SVG Ink Layer (Apple Pencil & Highlighters) */}
+          {/* Vector SVG Ink Layer */}
           <svg
             ref={svgExportRef}
             width={VIRTUAL_WIDTH}
-            height={notebook.pageHeight}
-            viewBox={`0 0 ${VIRTUAL_WIDTH} ${notebook.pageHeight}`}
+            height={pageHeight}
+            viewBox={`0 0 ${VIRTUAL_WIDTH} ${pageHeight}`}
             xmlns="http://www.w3.org/2000/svg"
             className="pointer-events-none absolute inset-0 z-30"
           >
@@ -847,15 +933,24 @@ export function GoodNotesCanvas({
         </div>
       </div>
 
-      {/* Extend Long Note Height Button */}
-      <div className="no-print mx-auto mt-4 flex max-w-[1000px] items-center justify-center">
+      {/* Bottom Page Actions: Add New Page + Extend Current Page */}
+      <div className="no-print mx-auto mt-4 flex max-w-[1000px] flex-wrap items-center justify-center gap-2.5 pb-8">
+        <button
+          type="button"
+          onClick={onAddPage}
+          className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-accent-dark transition-colors"
+        >
+          <FilePlus2 className="h-3.5 w-3.5" />
+          <span>เพิ่มหน้ากระดาษใหม่</span>
+        </button>
+
         <button
           type="button"
           onClick={onExtendPage}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-line bg-white px-4 py-2 text-xs font-semibold text-ink shadow-sm hover:bg-paper"
+          className="inline-flex items-center gap-1.5 rounded-xl border border-line bg-white px-4 py-2 text-xs font-semibold text-ink shadow-sm hover:bg-paper transition-colors"
         >
           <Plus className="h-3.5 w-3.5 text-accent" />
-          <span>เพิ่มความยาวหน้ากระดาษ (+1,000 px สำหรับจดโน้ตยาว)</span>
+          <span>เพิ่มความยาวหน้านี้ (+1,000 px)</span>
         </button>
       </div>
 

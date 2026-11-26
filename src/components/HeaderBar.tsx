@@ -5,20 +5,24 @@ import {
   KeyRound,
   Menu,
   Mic,
+  Moon,
   PenTool,
   Plus,
   Smartphone,
   Sparkles,
+  Sun,
 } from "lucide-react";
 
 export type WorkspaceMode = "notebook" | "meeting";
 
 interface HeaderBarProps {
   workspaceMode: WorkspaceMode;
+  theme: "light" | "dark";
   hasServerKey: boolean;
   hasUserKey: boolean;
   isStandalone: boolean;
   onChangeWorkspace: (mode: WorkspaceMode) => void;
+  onToggleTheme: () => void;
   onToggleSidebar: () => void;
   onNewAction: () => void;
   onLoadSample: () => void;
@@ -28,10 +32,12 @@ interface HeaderBarProps {
 
 export function HeaderBar({
   workspaceMode,
+  theme,
   hasServerKey,
   hasUserKey,
   isStandalone,
   onChangeWorkspace,
+  onToggleTheme,
   onToggleSidebar,
   onNewAction,
   onLoadSample,
@@ -111,6 +117,23 @@ export function HeaderBar({
               ดูตัวอย่างประชุม
             </button>
           )}
+
+          <button
+            type="button"
+            onClick={onToggleTheme}
+            className="inline-flex h-8 sm:h-auto items-center justify-center gap-1 rounded-lg border border-line bg-paper px-2 sm:px-2.5 sm:py-1.5 text-xs font-medium text-ink hover:bg-[#efede6] transition-colors"
+            title={theme === "dark" ? "สลับเป็นธีมสว่าง" : "สลับเป็นธีมมืด"}
+            aria-label="เปลี่ยนธีมสว่าง/มืด"
+          >
+            {theme === "dark" ? (
+              <Sun className="h-3.5 w-3.5 text-amber-400" />
+            ) : (
+              <Moon className="h-3.5 w-3.5 text-ink" />
+            )}
+            <span className="hidden sm:inline">
+              {theme === "dark" ? "สว่าง" : "มืด"}
+            </span>
+          </button>
 
           {!isStandalone && (
             <button

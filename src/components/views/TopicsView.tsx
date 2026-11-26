@@ -184,7 +184,7 @@ export function TopicsView({
                   {topic.decisions.map((decision, dIdx) => (
                     <p
                       key={dIdx}
-                      className="text-sm font-medium text-ink leading-relaxed pl-5"
+                      className="text-sm font-medium text-[#1C1B18] leading-relaxed pl-5"
                     >
                       • {decision}
                     </p>

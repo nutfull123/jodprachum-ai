@@ -18,6 +18,8 @@ import {
 import { hitTestStroke } from "../src/lib/media-utils.ts";
 import {
   createNotebookFromMeeting,
+  createNotebookPage,
+  ensureNotebookPages,
   mergeNotebook,
   strokePointsToSvgPath,
 } from "../src/lib/notebook-crdt.ts";
@@ -456,7 +458,9 @@ test("createNotebookFromMeeting creates non-overlapping meeting cards ready for 
 
   const nb = createNotebookFromMeeting(meeting);
   assert.equal(nb.title, "ประชุมสรุปงาน Q4");
+  assert.equal(nb.pages?.length, 2);
   assert.ok(nb.items.length >= 4);
+  assert.ok(nb.items.every((item) => item.pageId === "page-1"));
   for (let i = 0; i < nb.items.length; i += 1) {
     for (let j = i + 1; j < nb.items.length; j += 1) {
       const a = nb.items[i];
@@ -466,4 +470,49 @@ test("createNotebookFromMeeting creates non-overlapping meeting cards ready for 
       assert.equal(ox && oy, false, `Items ${a.id} and ${b.id} overlap`);
     }
   }
+});
+
+test("ensureNotebookPages upgrades legacy single-page notebooks and mergeNotebook syncs multi-page changes", () => {
+  const legacy: ShootNotebook = {
+    id: "legacy-1",
+    kind: "notebook",
+    title: "สมุดเดิม",
+    paperTemplate: "grid",
+    pageHeight: 1800,
+    strokes: [],
+    items: [],
+    metaUpdatedAt: 100,
+    createdAt: 100,
+    updatedAt: 100,
+  };
+
+  const pages = ensureNotebookPages(legacy);
+  assert.equal(pages.length, 1);
+  assert.equal(pages[0].id, "page-1");
+  assert.equal(pages[0].paperTemplate, "grid");
+  assert.equal(pages[0].pageHeight, 1800);
+
+  const page2 = createNotebookPage(1, "dark_grid", 1600, "page-2");
+  const page3 = createNotebookPage(2, "dark_lined", 1600, "page-3");
+
+  const localWithP2: ShootNotebook = {
+    ...legacy,
+    pages: [...pages, page2],
+  };
+  const remoteWithP3AndDeletedP2: ShootNotebook = {
+    ...legacy,
+    pages: [
+      pages[0],
+      { ...page2, deleted: true, updatedAt: page2.updatedAt + 50 },
+      page3,
+    ],
+  };
+
+  const merged = mergeNotebook(localWithP2, remoteWithP3AndDeletedP2);
+  const visible = ensureNotebookPages(merged);
+  assert.deepEqual(
+    visible.map((p) => p.id),
+    ["page-1", "page-3"]
+  );
+  assert.equal(visible[1].paperTemplate, "dark_lined");
 });

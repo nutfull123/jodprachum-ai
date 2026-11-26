@@ -31,12 +31,14 @@ import {
   getAudioBlob,
   getStoredApiKey,
   getStoredPasscode,
+  getStoredTheme,
   listMeetings,
   listNotebooks,
   saveMeeting,
   saveNotebook,
   setStoredApiKey,
   setStoredPasscode,
+  setStoredTheme,
   updateMeetingAnalysis,
 } from "../lib/storage";
 import { ApiKeyModal } from "../components/ApiKeyModal";
@@ -131,6 +133,7 @@ function createStarterNotebook(): ShootNotebook {
 
 export default function HomePage() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("notebook");
+  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [sidebarMobileOpen, setSidebarMobileOpen] = useState(false);
 
   // ShootNote notebooks state
@@ -170,6 +173,10 @@ export default function HomePage() {
 
   // Load local IndexedDB notebooks + meetings + localStorage keys + server config + PWA listeners
   useEffect(() => {
+    const storedTheme = getStoredTheme();
+    setTheme(storedTheme);
+    document.documentElement.classList.toggle("dark", storedTheme === "dark");
+
     setUserApiKey(getStoredApiKey());
     setUserPasscode(getStoredPasscode());
 
@@ -507,12 +514,20 @@ export default function HomePage() {
     }
   };
 
+  const handleToggleTheme = () => {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    setTheme(nextTheme);
+    setStoredTheme(nextTheme);
+    document.documentElement.classList.toggle("dark", nextTheme === "dark");
+  };
+
   const aiReady = Boolean(userApiKey.trim()) || hasServerKey;
 
   return (
     <div className="min-h-screen flex flex-col bg-paper text-ink">
       <HeaderBar
         workspaceMode={workspaceMode}
+        theme={theme}
         hasServerKey={hasServerKey}
         hasUserKey={Boolean(userApiKey.trim())}
         isStandalone={isStandalone}
@@ -520,6 +535,7 @@ export default function HomePage() {
           setWorkspaceMode(mode);
           setSidebarMobileOpen(false);
         }}
+        onToggleTheme={handleToggleTheme}
         onToggleSidebar={() => setSidebarMobileOpen(true)}
         onNewAction={handleNewAction}
         onLoadSample={handleLoadSample}

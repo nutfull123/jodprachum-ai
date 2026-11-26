@@ -9,6 +9,19 @@
   --text-muted: #6b685f;
   --border-line: #e6e4dd;
   --accent-teal: #0f766e;
+  --accent-soft: #eaf6f4;
+  --canvas-desk: #eceae2;
+}
+
+html.dark {
+  --bg-paper: #111418;
+  --bg-card: #1a1f26;
+  --text-ink: #f3f4f6;
+  --text-muted: #9ca3af;
+  --border-line: #2d333d;
+  --accent-soft: #122d2b;
+  --canvas-desk: #0b0e12;
+  color-scheme: dark;
 }
 
 html,
@@ -21,6 +34,117 @@ body {
 
 .safe-top-header {
   padding-top: env(safe-area-inset-top);
+}
+
+/* Dark theme adaptive studio surfaces (preserving explicit paper sheets) */
+html.dark .bg-white:not([data-paper-surface="true"]),
+html.dark .bg-white\/95,
+html.dark .bg-white\/90,
+html.dark .bg-white\/85,
+html.dark .bg-white\/80,
+html.dark .bg-white\/75 {
+  background-color: var(--bg-card) !important;
+}
+
+html.dark .bg-\[\#ECEAE2\],
+html.dark .bg-\[\#FAF9F6\] {
+  background-color: var(--canvas-desk) !important;
+}
+
+html.dark .bg-ink {
+  background-color: #27303f !important;
+  color: #f9fafb !important;
+  border-color: #3d485c !important;
+}
+
+html.dark .bg-ink:hover {
+  background-color: #334155 !important;
+}
+
+html.dark .hover\:bg-\[\#efede6\]:hover,
+html.dark .hover\:bg-\[\#f0eee8\]:hover {
+  background-color: #252b34 !important;
+}
+
+html.dark .text-accent {
+  color: #2dd4bf;
+}
+
+html.dark .text-accent-dark {
+  color: #5eead4;
+}
+
+html.dark .bg-emerald-50,
+html.dark .bg-emerald-50\/70,
+html.dark .bg-emerald-50\/50,
+html.dark .bg-emerald-50\/35 {
+  background-color: rgba(16, 185, 129, 0.14) !important;
+}
+
+html.dark .text-emerald-800,
+html.dark .text-emerald-900,
+html.dark .text-emerald-700 {
+  color: #6ee7b7 !important;
+}
+
+html.dark .border-emerald-200,
+html.dark .border-emerald-100 {
+  border-color: rgba(16, 185, 129, 0.35) !important;
+}
+
+html.dark .bg-amber-50,
+html.dark .bg-amber-50\/90,
+html.dark .bg-amber-50\/70 {
+  background-color: rgba(245, 158, 11, 0.14) !important;
+}
+
+html.dark .text-amber-900,
+html.dark .text-amber-800 {
+  color: #fcd34d !important;
+}
+
+html.dark .border-amber-200,
+html.dark .border-amber-300,
+html.dark .border-amber-100 {
+  border-color: rgba(245, 158, 11, 0.35) !important;
+}
+
+html.dark .bg-rose-50 {
+  background-color: rgba(244, 63, 94, 0.15) !important;
+}
+
+html.dark .text-rose-700,
+html.dark .text-rose-800,
+html.dark .text-rose-900 {
+  color: #fda4af !important;
+}
+
+html.dark .border-rose-200,
+html.dark .border-rose-300 {
+  border-color: rgba(244, 63, 94, 0.35) !important;
+}
+
+/* Keep light paper sheets and light sticky/meeting cards crisp even in Dark Mode */
+html.dark [data-paper-surface="true"][data-dark-paper="false"] .text-ink {
+  color: #1c1b18;
+}
+
+html.dark [data-paper-surface="true"][data-dark-paper="false"] .text-muted {
+  color: #6b685f;
+}
+
+html.dark [data-paper-surface="true"] [data-paper-card="true"] .text-ink {
+  color: #1c1b18;
+}
+
+html.dark [data-paper-surface="true"] [data-paper-card="true"] .text-muted {
+  color: #6b685f;
+}
+
+html.dark [data-paper-surface="true"] [data-paper-card="true"].bg-white,
+html.dark [data-paper-surface="true"] [data-paper-card="true"] .bg-white {
+  background-color: #ffffff !important;
+  color: #1c1b18 !important;
 }
 
 /* Custom subtle scrollbars */
@@ -38,11 +162,16 @@ body {
   border-radius: 9999px;
 }
 
+html.dark ::-webkit-scrollbar-thumb {
+  background: #374151;
+}
+
 ::-webkit-scrollbar-thumb:hover {
   background: #bdb9ae;
 }
 
 @media print {
+  html,
   body {
     background: #ffffff !important;
     color: #000000 !important;

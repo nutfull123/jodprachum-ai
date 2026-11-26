@@ -3,6 +3,8 @@ import type { SavedMeeting } from "../types/meeting";
 import type {
   CanvasItem,
   InkStroke,
+  NotebookPage,
+  PaperTemplate,
   ShootNotebook,
   StrokePoint,
 } from "../types/notebook";
@@ -17,11 +19,55 @@ export function generateRoomCode(): string {
   return `SN-${code}`;
 }
 
+export function createNotebookPage(
+  order: number,
+  paperTemplate: PaperTemplate = "lined",
+  pageHeight: number = 1600,
+  id?: string
+): NotebookPage {
+  const now = Date.now();
+  return {
+    id:
+      id ||
+      (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? `page-${crypto.randomUUID().slice(0, 8)}`
+        : `page-${now}-${order}`),
+    paperTemplate,
+    pageHeight,
+    order,
+    updatedAt: now,
+  };
+}
+
+export function ensureNotebookPages(nb: ShootNotebook): NotebookPage[] {
+  const raw = Array.isArray(nb.pages) ? nb.pages : [];
+  const active = raw
+    .filter((p) => !p.deleted)
+    .slice()
+    .sort((a, b) => a.order - b.order);
+
+  if (active.length > 0) {
+    return active;
+  }
+
+  return [
+    {
+      id: "page-1",
+      paperTemplate: nb.paperTemplate || "lined",
+      pageHeight: nb.pageHeight || 1600,
+      order: 0,
+      updatedAt: nb.metaUpdatedAt || nb.createdAt || 0,
+    },
+  ];
+}
+
 export function createEmptyNotebook(
   kind: "notebook" | "shortnote" = "notebook",
   title?: string
 ): ShootNotebook {
   const now = Date.now();
+  const paperTemplate: PaperTemplate = kind === "shortnote" ? "dotted" : "lined";
+  const pageHeight = kind === "shortnote" ? 1100 : 1600;
   return {
     id:
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -32,8 +78,9 @@ export function createEmptyNotebook(
       title?.trim() ||
       (kind === "shortnote" ? "ShootNote ด่วน" : "สมุดจดใหม่"),
     quickBody: kind === "shortnote" ? "" : undefined,
-    paperTemplate: kind === "shortnote" ? "dotted" : "lined",
-    pageHeight: kind === "shortnote" ? 1100 : 1600,
+    paperTemplate,
+    pageHeight,
+    pages: [createNotebookPage(0, paperTemplate, pageHeight, "page-1")],
     strokes: [],
     items: [],
     metaUpdatedAt: now,
@@ -59,11 +106,39 @@ function mergeByIdLWW<T extends { id: string; updatedAt: number }>(
   return Array.from(map.values());
 }
 
+function mergePagesLWW(
+  localPages: NotebookPage[],
+  remotePages: NotebookPage[]
+): NotebookPage[] {
+  const map = new Map<string, NotebookPage>();
+  for (const p of localPages) {
+    map.set(p.id, p);
+  }
+  for (const p of remotePages) {
+    const existing = map.get(p.id);
+    if (!existing) {
+      map.set(p.id, p);
+    } else {
+      const winner = p.updatedAt >= existing.updatedAt ? p : existing;
+      map.set(p.id, {
+        ...winner,
+        pageHeight: Math.max(existing.pageHeight || 1600, p.pageHeight || 1600),
+      });
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => a.order - b.order);
+}
+
 export function mergeNotebook(
   local: ShootNotebook,
   remote: ShootNotebook
 ): ShootNotebook {
   const useRemoteMeta = remote.metaUpdatedAt > local.metaUpdatedAt;
+  const localPages = local.pages?.length ? local.pages : ensureNotebookPages(local);
+  const remotePages = remote.pages?.length
+    ? remote.pages
+    : ensureNotebookPages(remote);
+
   return {
     id: local.id || remote.id,
     kind: useRemoteMeta ? remote.kind : local.kind,
@@ -71,6 +146,7 @@ export function mergeNotebook(
     quickBody: useRemoteMeta ? remote.quickBody : local.quickBody,
     paperTemplate: useRemoteMeta ? remote.paperTemplate : local.paperTemplate,
     pageHeight: Math.max(local.pageHeight || 1600, remote.pageHeight || 1600),
+    pages: mergePagesLWW(localPages, remotePages),
     strokes: mergeByIdLWW<InkStroke>(local.strokes || [], remote.strokes || []),
     items: mergeByIdLWW<CanvasItem>(local.items || [], remote.items || []),
     roomId: local.roomId || remote.roomId,
@@ -141,6 +217,7 @@ const TOPIC_CARD_BG = [
 export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook {
   const now = Date.now();
   const { analysis } = meeting;
+  const page1Id = "page-1";
   const items: CanvasItem[] = [];
   let cursorY = 56;
   let z = 1;
@@ -161,6 +238,7 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
   const execHeight = Math.max(190, Math.min(340, 120 + execText.length * 0.42));
   items.push({
     id: `mc-exec-${now}`,
+    pageId: page1Id,
     type: "meeting_card",
     x: 48,
     y: cursorY,
@@ -207,6 +285,7 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
     const cardHeight = Math.max(210, Math.min(420, 110 + body.length * 0.55));
     items.push({
       id: `mc-topic-${idx}-${now}`,
+      pageId: page1Id,
       type: "meeting_card",
       x,
       y,
@@ -242,6 +321,7 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
 
     items.push({
       id: `mc-tasks-${now}`,
+      pageId: page1Id,
       type: "sticky",
       x: 48,
       y: cursorY,
@@ -258,6 +338,8 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
     cursorY += Math.round(taskHeight) + 120;
   }
 
+  const page1Height = Math.max(1600, cursorY + 300);
+
   return {
     id:
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -266,7 +348,11 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
     kind: "notebook",
     title: analysis.meetingTitle,
     paperTemplate: "lined",
-    pageHeight: Math.max(1600, cursorY + 300),
+    pageHeight: page1Height,
+    pages: [
+      createNotebookPage(0, "lined", page1Height, page1Id),
+      createNotebookPage(1, "lined", 1600, "page-2"),
+    ],
     strokes: [],
     items,
     metaUpdatedAt: now,

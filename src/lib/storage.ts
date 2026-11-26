@@ -11,6 +11,7 @@ const STORE_MEDIA = "media_blobs";
 const LS_API_KEY = "jodprachum_gemini_key";
 const LS_PASSCODE = "jodprachum_passcode";
 const LS_DISPLAY_NAME = "shootnote_display_name";
+const LS_THEME = "shootnote_theme";
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -289,4 +290,14 @@ export function setDisplayName(name: string): void {
   } else {
     window.localStorage.removeItem(LS_DISPLAY_NAME);
   }
+}
+
+export function getStoredTheme(): "light" | "dark" {
+  if (typeof window === "undefined") return "light";
+  return window.localStorage.getItem(LS_THEME) === "dark" ? "dark" : "light";
+}
+
+export function setStoredTheme(theme: "light" | "dark"): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(LS_THEME, theme);
 }

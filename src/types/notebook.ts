@@ -4,14 +4,28 @@ export type PaperTemplate =
   | "grid"
   | "dotted"
   | "cream"
-  | "cornell";
+  | "cornell"
+  | "dark_lined"
+  | "dark_grid"
+  | "dark_dotted";
 
 export type NotebookTool = "select" | "pen" | "highlighter" | "eraser";
 
 export type StrokePoint = [number, number, number]; // [x, y, pressure]
 
+export interface NotebookPage {
+  id: string;
+  title?: string;
+  paperTemplate: PaperTemplate;
+  pageHeight: number;
+  order: number;
+  updatedAt: number;
+  deleted?: boolean;
+}
+
 export interface InkStroke {
   id: string;
+  pageId?: string;
   tool: "pen" | "highlighter";
   color: string;
   size: number;
@@ -36,6 +50,7 @@ export type ShapeKind = "rect" | "rounded" | "circle" | "banner";
 
 export interface CanvasItem {
   id: string;
+  pageId?: string;
   type: CanvasItemType;
   x: number;
   y: number;
@@ -66,6 +81,7 @@ export interface ShootNotebook {
   quickBody?: string;
   paperTemplate: PaperTemplate;
   pageHeight: number;
+  pages?: NotebookPage[];
   strokes: InkStroke[];
   items: CanvasItem[];
   roomId?: string;
@@ -86,6 +102,7 @@ export interface PeerPresence {
 
 export const GOODNOTES_COLORS = [
   "#1C1B18", // Charcoal ink
+  "#FFFFFF", // White chalk (for dark paper)
   "#0F766E", // ShootNote Teal
   "#1D4ED8", // Royal Blue
   "#DC2626", // Crimson Red
@@ -138,7 +155,16 @@ export const PAPER_TEMPLATES: Array<{
   { id: "cream", label: "ครีมถนอมสายตา" },
   { id: "cornell", label: "Cornell Note" },
   { id: "blank", label: "กระดาษขาวล้วน" },
+  { id: "dark_lined", label: "กระดาษมืดมีเส้น" },
+  { id: "dark_grid", label: "กระดาษมืดกริด" },
+  { id: "dark_dotted", label: "กระดาษมืดจุดไข่ปลา" },
 ];
+
+export function isDarkPaperTemplate(tpl: PaperTemplate): boolean {
+  return (
+    tpl === "dark_lined" || tpl === "dark_grid" || tpl === "dark_dotted"
+  );
+}
 
 export const PEER_COLORS = [
   "#0F766E",

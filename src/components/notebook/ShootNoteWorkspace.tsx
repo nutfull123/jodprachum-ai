@@ -3,28 +3,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  ChevronLeft,
+  ChevronRight,
+  FilePlus2,
   PencilLine,
   Radio,
   ShieldCheck,
+  X,
 } from "lucide-react";
 import {
   GOODNOTES_COLORS,
   HIGHLIGHTER_COLORS,
+  isDarkPaperTemplate,
   type CanvasItem,
   type InkStroke,
+  type NotebookPage,
   type NotebookTool,
   type PaperTemplate,
   type PeerPresence,
   type ShapeKind,
   type ShootNotebook,
 } from "../../types/notebook";
-import {
-  compressImageToDataUrl,
-  blobToBase64,
-  base64ToBlob,
-} from "../../lib/media-utils";
+import { compressImageToDataUrl } from "../../lib/media-utils";
 import {
   createEmptyNotebook,
+  createNotebookPage,
+  ensureNotebookPages,
   generateRoomCode,
   mergeNotebook,
   strokePointsToSvgPath,
@@ -73,6 +77,21 @@ export function ShootNoteWorkspace({
     [notebooks, activeNotebookId]
   );
 
+  // Active pages for current notebook
+  const activePages = useMemo(
+    () => (activeNotebook ? ensureNotebookPages(activeNotebook) : []),
+    [activeNotebook]
+  );
+
+  const [activePageId, setActivePageId] = useState<string>("page-1");
+
+  const activePageIndex = useMemo(() => {
+    const idx = activePages.findIndex((p) => p.id === activePageId);
+    return idx >= 0 ? idx : 0;
+  }, [activePages, activePageId]);
+
+  const activePage: NotebookPage | null = activePages[activePageIndex] || null;
+
   // Tool state
   const [tool, setTool] = useState<NotebookTool>("pen");
   const [penColor, setPenColor] = useState<string>(GOODNOTES_COLORS[0]);
@@ -104,10 +123,15 @@ export function ShootNoteWorkspace({
     if (stored) setCollabName(stored);
   }, []);
 
-  // Reset undo/redo when switching notebooks
+  // Reset undo/redo and activePageId when switching notebooks
   useEffect(() => {
     setUndoStack([]);
     setRedoStack([]);
+    if (activeNotebook) {
+      const pages = ensureNotebookPages(activeNotebook);
+      setActivePageId(pages[0]?.id || "page-1");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNotebookId]);
 
   const commitNotebookUpdate = useCallback(
@@ -146,7 +170,6 @@ export function ShootNoteWorkspace({
     onUpsertNotebook(joinedNb);
     saveNotebook(joinedNb).catch(() => undefined);
     onSelectNotebook(joinedNb.id);
-    // Only trigger when initialRoomCode appears
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialRoomCode]);
 
@@ -180,6 +203,13 @@ export function ShootNoteWorkspace({
           ...current,
           strokes: [],
           items: [delta.item],
+        });
+      } else if (delta.type === "page") {
+        merged = mergeNotebook(current, {
+          ...current,
+          pages: [delta.page],
+          strokes: [],
+          items: [],
         });
       } else if (delta.type === "meta") {
         merged = mergeNotebook(current, {
@@ -250,6 +280,98 @@ export function ShootNoteWorkspace({
     onSelectNotebook(nb.id);
   };
 
+  const getRawPages = (nb: ShootNotebook): NotebookPage[] => {
+    return nb.pages && nb.pages.length > 0 ? nb.pages : ensureNotebookPages(nb);
+  };
+
+  const handleAddPage = () => {
+    if (!activeNotebook || !activePage) return;
+    const rawPages = getRawPages(activeNotebook);
+    const maxOrder = Math.max(-1, ...rawPages.map((p) => p.order));
+    const newPage = createNotebookPage(
+      maxOrder + 1,
+      activePage.paperTemplate,
+      1600
+    );
+    const next: ShootNotebook = {
+      ...activeNotebook,
+      pages: [...rawPages, newPage],
+      updatedAt: Date.now(),
+    };
+    commitNotebookUpdate(next, true);
+    setActivePageId(newPage.id);
+    syncSessionRef.current?.broadcastDelta({ type: "page", page: newPage });
+  };
+
+  const handleDeletePage = (pageIdToDelete: string) => {
+    if (!activeNotebook || activePages.length <= 1) return;
+    const now = Date.now();
+    const rawPages = getRawPages(activeNotebook);
+    let tombstone: NotebookPage | null = null;
+    const nextPages = rawPages.map((p) => {
+      if (p.id === pageIdToDelete) {
+        tombstone = { ...p, deleted: true, updatedAt: now };
+        return tombstone;
+      }
+      return p;
+    });
+
+    const next: ShootNotebook = {
+      ...activeNotebook,
+      pages: nextPages,
+      updatedAt: now,
+    };
+    commitNotebookUpdate(next, true);
+    if (tombstone) {
+      syncSessionRef.current?.broadcastDelta({
+        type: "page",
+        page: tombstone,
+      });
+    }
+
+    if (activePageId === pageIdToDelete) {
+      const remaining = ensureNotebookPages(next);
+      setActivePageId(
+        remaining[Math.max(0, activePageIndex - 1)]?.id ||
+          remaining[0]?.id ||
+          "page-1"
+      );
+    }
+  };
+
+  const updateActivePage = (
+    patch: Partial<Pick<NotebookPage, "paperTemplate" | "pageHeight">>,
+    pushHistory: boolean = true
+  ) => {
+    if (!activeNotebook || !activePage) return;
+    const now = Date.now();
+    const rawPages = getRawPages(activeNotebook);
+    const updatedPage: NotebookPage = {
+      ...activePage,
+      ...patch,
+      updatedAt: now,
+    };
+    const nextPages = rawPages.map((p) =>
+      p.id === activePage.id ? updatedPage : p
+    );
+
+    const next: ShootNotebook = {
+      ...activeNotebook,
+      pages: nextPages,
+      paperTemplate:
+        activePageIndex === 0 && patch.paperTemplate
+          ? patch.paperTemplate
+          : activeNotebook.paperTemplate,
+      pageHeight:
+        activePageIndex === 0 && patch.pageHeight
+          ? patch.pageHeight
+          : activeNotebook.pageHeight,
+      updatedAt: now,
+    };
+    commitNotebookUpdate(next, pushHistory);
+    syncSessionRef.current?.broadcastDelta({ type: "page", page: updatedPage });
+  };
+
   const handleAddStroke = (stroke: InkStroke) => {
     if (!activeNotebook) return;
     const next: ShootNotebook = {
@@ -290,17 +412,25 @@ export function ShootNoteWorkspace({
     );
   };
 
-  const addCanvasItem = (partial: Omit<CanvasItem, "id" | "zIndex" | "updatedAt">) => {
-    if (!activeNotebook) return;
+  const addCanvasItem = (
+    partial: Omit<CanvasItem, "id" | "pageId" | "zIndex" | "updatedAt">
+  ) => {
+    if (!activeNotebook || !activePage) return;
     const now = Date.now();
     const maxZ = Math.max(
       0,
       ...activeNotebook.items.map((i) => i.zIndex || 0)
     );
-    const offset = (activeNotebook.items.length % 5) * 26;
+    const pageItemCount = activeNotebook.items.filter(
+      (i) =>
+        !i.deleted &&
+        (i.pageId === activePage.id || (!i.pageId && activePageIndex === 0))
+    ).length;
+    const offset = (pageItemCount % 5) * 26;
     const item: CanvasItem = {
       ...partial,
       id: `item-${now}-${Math.floor(Math.random() * 1000)}`,
+      pageId: activePage.id,
       x: Math.min(720, partial.x + offset),
       y: partial.y + offset,
       zIndex: maxZ + 1,
@@ -386,7 +516,10 @@ export function ShootNoteWorkspace({
       addCanvasItem({
         type: "image",
         x: 90,
-        y: activeNotebook.kind === "shortnote" ? 230 : 120,
+        y:
+          activeNotebook.kind === "shortnote" && activePageIndex === 0
+            ? 230
+            : 120,
         width: Math.max(140, Math.round(width * ratio)),
         height: Math.max(120, Math.round(height * ratio)),
         dataUrl,
@@ -408,7 +541,10 @@ export function ShootNoteWorkspace({
     addCanvasItem({
       type: isVideo ? "video" : "audio",
       x: 90,
-      y: activeNotebook.kind === "shortnote" ? 230 : 140,
+      y:
+        activeNotebook.kind === "shortnote" && activePageIndex === 0
+          ? 230
+          : 140,
       width: isVideo ? 380 : 340,
       height: isVideo ? 240 : 96,
       mediaBlobId: mediaId,
@@ -416,7 +552,6 @@ export function ShootNoteWorkspace({
       fileName: file.name,
     });
 
-    // Sync clip to live room peers if <= 10MB
     syncSessionRef.current
       ?.broadcastMediaBlob(mediaId, file, mimeType, file.name)
       .catch(() => undefined);
@@ -443,27 +578,32 @@ export function ShootNoteWorkspace({
   };
 
   const handleExportPng = () => {
-    if (!activeNotebook) return;
+    if (!activeNotebook || !activePage) return;
     const width = 1000;
-    const height = activeNotebook.pageHeight;
+    const height = activePage.pageHeight || 1600;
+    const tpl = activePage.paperTemplate;
+    const dark = isDarkPaperTemplate(tpl);
+
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // 1. Paper background
-    ctx.fillStyle =
-      activeNotebook.paperTemplate === "cream" ? "#FDF8EC" : "#FFFFFF";
+    ctx.fillStyle = dark ? "#181B20" : tpl === "cream" ? "#FDF8EC" : "#FFFFFF";
     ctx.fillRect(0, 0, width, height);
 
     if (
-      activeNotebook.paperTemplate === "lined" ||
-      activeNotebook.paperTemplate === "cream" ||
-      activeNotebook.paperTemplate === "cornell"
+      tpl === "lined" ||
+      tpl === "cream" ||
+      tpl === "cornell" ||
+      tpl === "dark_lined"
     ) {
-      ctx.strokeStyle =
-        activeNotebook.paperTemplate === "cream" ? "#EDE2C8" : "#E2E8F0";
+      ctx.strokeStyle = dark
+        ? "#2A303B"
+        : tpl === "cream"
+          ? "#EDE2C8"
+          : "#E2E8F0";
       ctx.lineWidth = 1;
       for (let y = 36; y < height; y += 36) {
         ctx.beginPath();
@@ -471,8 +611,8 @@ export function ShootNoteWorkspace({
         ctx.lineTo(width, y);
         ctx.stroke();
       }
-    } else if (activeNotebook.paperTemplate === "grid") {
-      ctx.strokeStyle = "#E5E7EB";
+    } else if (tpl === "grid" || tpl === "dark_grid") {
+      ctx.strokeStyle = dark ? "#2A303B" : "#E5E7EB";
       ctx.lineWidth = 1;
       for (let x = 28; x < width; x += 28) {
         ctx.beginPath();
@@ -488,10 +628,15 @@ export function ShootNoteWorkspace({
       }
     }
 
-    // 2. Render basic item cards & text
-    for (const item of activeNotebook.items
-      .filter((i) => !i.deleted)
-      .sort((a, b) => a.zIndex - b.zIndex)) {
+    const pageItems = activeNotebook.items
+      .filter(
+        (i) =>
+          !i.deleted &&
+          (i.pageId === activePage.id || (!i.pageId && activePageIndex === 0))
+      )
+      .sort((a, b) => a.zIndex - b.zIndex);
+
+    for (const item of pageItems) {
       if (
         item.type === "sticky" ||
         item.type === "meeting_card" ||
@@ -510,7 +655,8 @@ export function ShootNoteWorkspace({
         ctx.font = "48px sans-serif";
         ctx.fillText(item.stickerEmoji || "⭐", item.x + 18, item.y + 56);
       } else if (item.title || item.text) {
-        ctx.fillStyle = item.color || "#1C1B18";
+        ctx.fillStyle =
+          item.type === "text" && dark ? "#F3F4F6" : item.color || "#1C1B18";
         ctx.font = `600 ${item.fontSize || 15}px "IBM Plex Sans Thai", sans-serif`;
         const textBlock = [item.title, item.text].filter(Boolean).join("\n");
         const lines = textBlock.split("\n");
@@ -525,8 +671,13 @@ export function ShootNoteWorkspace({
       }
     }
 
-    // 3. Render ink strokes onto canvas
-    for (const s of activeNotebook.strokes.filter((st) => !st.deleted)) {
+    const pageStrokes = activeNotebook.strokes.filter(
+      (st) =>
+        !st.deleted &&
+        (st.pageId === activePage.id || (!st.pageId && activePageIndex === 0))
+    );
+
+    for (const s of pageStrokes) {
       const pathStr = strokePointsToSvgPath(s.points, {
         size: s.size,
         tool: s.tool,
@@ -545,7 +696,7 @@ export function ShootNoteWorkspace({
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${sanitizeFileName(activeNotebook.title)}.png`;
+      a.download = `${sanitizeFileName(activeNotebook.title)}-p${activePageIndex + 1}.png`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -665,7 +816,7 @@ export function ShootNoteWorkspace({
       />
 
       <main className="flex-1 min-w-0 flex flex-col bg-[#ECEAE2]">
-        {!activeNotebook ? (
+        {!activeNotebook || !activePage ? (
           <div className="flex-1 flex items-center justify-center p-6">
             <div className="max-w-md w-full rounded-2xl border border-line bg-white p-6 text-center shadow-sm space-y-4">
               <h2 className="text-lg font-bold text-ink">
@@ -673,7 +824,7 @@ export function ShootNoteWorkspace({
               </h2>
               <p className="text-xs text-muted leading-relaxed">
                 เลือกสร้างสมุดจดยาวสไตล์ GoodNotes (รองรับ Apple Pencil บน iPad,
-                สติกเกอร์, แนบภาพ/คลิป) หรือเปิด ShortNote สำหรับจดด่วน
+                หลายหน้ากระดาษ, สติกเกอร์, แนบภาพ/คลิป) หรือเปิด ShortNote สำหรับจดด่วน
               </p>
               <div className="flex flex-col sm:flex-row gap-2.5">
                 <button
@@ -738,7 +889,7 @@ export function ShootNoteWorkspace({
               color={activeColor}
               size={activeSize}
               palmRejection={palmRejection}
-              paperTemplate={activeNotebook.paperTemplate}
+              paperTemplate={activePage.paperTemplate}
               canUndo={undoStack.length > 0}
               canRedo={redoStack.length > 0}
               roomId={activeNotebook.roomId}
@@ -753,14 +904,22 @@ export function ShootNoteWorkspace({
                 else setPenSize(s);
               }}
               onTogglePalmRejection={() => setPalmRejection((v) => !v)}
-              onChangeTemplate={(tpl: PaperTemplate) =>
-                updateMeta({ paperTemplate: tpl }, true)
-              }
+              onChangeTemplate={(tpl: PaperTemplate) => {
+                updateActivePage({ paperTemplate: tpl }, true);
+                if (isDarkPaperTemplate(tpl) && penColor === "#1C1B18") {
+                  setPenColor("#FFFFFF");
+                } else if (!isDarkPaperTemplate(tpl) && penColor === "#FFFFFF") {
+                  setPenColor("#1C1B18");
+                }
+              }}
               onInsertText={() =>
                 addCanvasItem({
                   type: "text",
                   x: 80,
-                  y: activeNotebook.kind === "shortnote" ? 230 : 90,
+                  y:
+                    activeNotebook.kind === "shortnote" && activePageIndex === 0
+                      ? 230
+                      : 90,
                   width: 320,
                   height: 110,
                   text: "พิมพ์ข้อความที่นี่...",
@@ -772,7 +931,10 @@ export function ShootNoteWorkspace({
                 addCanvasItem({
                   type: "sticky",
                   x: 100,
-                  y: activeNotebook.kind === "shortnote" ? 230 : 110,
+                  y:
+                    activeNotebook.kind === "shortnote" && activePageIndex === 0
+                      ? 230
+                      : 110,
                   width: 280,
                   height: 220,
                   title: "โน้ตย่อ",
@@ -786,7 +948,10 @@ export function ShootNoteWorkspace({
                 addCanvasItem({
                   type: "sticker",
                   x: 140,
-                  y: activeNotebook.kind === "shortnote" ? 230 : 120,
+                  y:
+                    activeNotebook.kind === "shortnote" && activePageIndex === 0
+                      ? 230
+                      : 120,
                   width: 110,
                   height: 110,
                   stickerEmoji: emoji,
@@ -797,7 +962,10 @@ export function ShootNoteWorkspace({
                 addCanvasItem({
                   type: "shape",
                   x: 110,
-                  y: activeNotebook.kind === "shortnote" ? 230 : 120,
+                  y:
+                    activeNotebook.kind === "shortnote" && activePageIndex === 0
+                      ? 230
+                      : 120,
                   width: shapeKind === "circle" ? 180 : 320,
                   height: shapeKind === "banner" ? 80 : 160,
                   shapeKind,
@@ -816,8 +984,98 @@ export function ShootNoteWorkspace({
               onOpenShareModal={() => setShareModalOpen(true)}
             />
 
+            {/* Multi-Page Navigator Strip */}
+            <div className="no-print border-b border-line bg-paper px-3 py-1.5 sm:px-5 flex items-center justify-between gap-2 overflow-x-auto">
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  disabled={activePageIndex <= 0}
+                  onClick={() =>
+                    setActivePageId(activePages[activePageIndex - 1].id)
+                  }
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-line bg-white text-ink hover:bg-paper disabled:opacity-35"
+                  aria-label="หน้าก่อนหน้า"
+                  title="หน้าก่อนหน้า"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+
+                <span className="font-mono text-[11px] font-semibold text-muted px-1 whitespace-nowrap">
+                  หน้า {activePageIndex + 1}/{activePages.length}
+                </span>
+
+                <button
+                  type="button"
+                  disabled={activePageIndex >= activePages.length - 1}
+                  onClick={() =>
+                    setActivePageId(activePages[activePageIndex + 1].id)
+                  }
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-line bg-white text-ink hover:bg-paper disabled:opacity-35"
+                  aria-label="หน้าถัดไป"
+                  title="หน้าถัดไป"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1.5 overflow-x-auto flex-1 py-0.5">
+                {activePages.map((pg, idx) => {
+                  const isCurrent = pg.id === activePage.id;
+                  return (
+                    <div
+                      key={pg.id}
+                      className={`inline-flex items-center rounded-lg border text-xs font-medium shrink-0 transition-colors ${
+                        isCurrent
+                          ? "border-accent bg-accent text-white shadow-sm"
+                          : "border-line bg-white text-ink hover:bg-accent-soft"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setActivePageId(pg.id)}
+                        className="px-2.5 py-1 whitespace-nowrap"
+                      >
+                        หน้า {idx + 1}
+                      </button>
+                      {activePages.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeletePage(pg.id);
+                          }}
+                          className={`pr-1.5 pl-0.5 py-1 hover:opacity-80 ${
+                            isCurrent
+                              ? "text-white/90"
+                              : "text-muted hover:text-rose-600"
+                          }`}
+                          aria-label={`ลบหน้า ${idx + 1}`}
+                          title={`ลบหน้า ${idx + 1}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleAddPage}
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:bg-accent-dark transition-colors shadow-sm"
+              >
+                <FilePlus2 className="h-3.5 w-3.5" />
+                <span>เพิ่มหน้ากระดาษ</span>
+              </button>
+            </div>
+
             <GoodNotesCanvas
               notebook={activeNotebook}
+              activePage={activePage}
+              isFirstPage={activePageIndex === 0}
+              pageIndex={activePageIndex}
+              totalPages={activePages.length}
               tool={tool}
               color={activeColor}
               size={activeSize}
@@ -830,11 +1088,12 @@ export function ShootNoteWorkspace({
               onDeleteItem={handleDeleteItem}
               onUpdateQuickBody={(quickBody) => updateMeta({ quickBody })}
               onExtendPage={() =>
-                updateMeta(
-                  { pageHeight: activeNotebook.pageHeight + 1000 },
+                updateActivePage(
+                  { pageHeight: (activePage.pageHeight || 1600) + 1000 },
                   true
                 )
               }
+              onAddPage={handleAddPage}
               onCursorMove={(x, y) =>
                 syncSessionRef.current?.broadcastCursor(x, y, tool)
               }

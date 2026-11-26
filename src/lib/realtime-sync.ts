@@ -2,6 +2,7 @@ import {
   PEER_COLORS,
   type CanvasItem,
   type InkStroke,
+  type NotebookPage,
   type NotebookTool,
   type PeerPresence,
   type ShootNotebook,
@@ -13,6 +14,7 @@ export type RoomSyncStatus = "connecting" | "connected" | "offline";
 export type NotebookDelta =
   | { type: "stroke"; stroke: InkStroke }
   | { type: "item"; item: CanvasItem }
+  | { type: "page"; page: NotebookPage }
   | {
       type: "meta";
       title: string;
