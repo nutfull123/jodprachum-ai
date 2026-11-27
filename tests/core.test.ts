@@ -45,8 +45,16 @@ import {
   UPDATE_SNOOZE_MS,
   shouldPromptAppUpdate,
 } from "../src/lib/app-version.ts";
+import {
+  canMoveFolderInto,
+  countNotebooksInFolder,
+  createFolder,
+  getFolderBreadcrumbs,
+  moveNotebookToFolder,
+  removeFolderAndUnfileNotebooks,
+} from "../src/lib/folder-utils.ts";
 import type { SavedMeeting } from "../src/types/meeting.ts";
-import type { ShootNotebook } from "../src/types/notebook.ts";
+import type { NotebookFolder, ShootNotebook } from "../src/types/notebook.ts";
 
 test("normalizeAudioMimeType strips codecs and normalizes browser/device audio formats", () => {
   assert.equal(
@@ -1008,4 +1016,66 @@ test("createEmptyNotebook('slides') creates 16:9 slide deck and createMeetingPag
   const appended = createMeetingPageItems(sampleMeeting, "page-ai-2", 10);
   assert.ok(appended.items.length >= 1);
   assert.ok(appended.items.every((it) => it.pageId === "page-ai-2"));
+});
+
+test("folder helpers create folders, move notebooks, compute breadcrumbs/counts, and safely unfile on folder delete", () => {
+  const rootFolder = createFolder("งานวิจัย", "#0F766E", null);
+  const subFolder = createFolder("บทที่ 1", "#2563EB", rootFolder.id);
+  const otherFolder = createFolder("ส่วนตัว", "#D97706", null);
+
+  assert.equal(rootFolder.name, "งานวิจัย");
+  assert.equal(subFolder.parentId, rootFolder.id);
+
+  const nb1 = createEmptyNotebook("notebook", "โน้ตทดลอง", null);
+  const nb2 = createEmptyNotebook("slides", "สไลด์ประชุม", rootFolder.id);
+
+  // Move nb1 into nested subfolder
+  const moved1 = moveNotebookToFolder([nb1, nb2], nb1.id, subFolder.id);
+  assert.equal(moved1.updatedNotebook?.folderId, subFolder.id);
+
+  // Recursive count & breadcrumbs
+  const folders: NotebookFolder[] = [rootFolder, subFolder, otherFolder];
+  assert.equal(countNotebooksInFolder(moved1.notebooks, folders, rootFolder.id), 2);
+  assert.equal(countNotebooksInFolder(moved1.notebooks, folders, subFolder.id), 1);
+  assert.equal(countNotebooksInFolder(moved1.notebooks, folders, otherFolder.id), 0);
+
+  const crumbs = getFolderBreadcrumbs(folders, subFolder.id);
+  assert.deepEqual(
+    crumbs.map((c) => c.id),
+    [rootFolder.id, subFolder.id]
+  );
+
+  // Cycle guard prevents moving a folder into its own descendant or itself
+  assert.equal(canMoveFolderInto(folders, rootFolder.id, subFolder.id), false);
+  assert.equal(canMoveFolderInto(folders, rootFolder.id, rootFolder.id), false);
+  assert.equal(canMoveFolderInto(folders, otherFolder.id, subFolder.id), true);
+
+  // Deleting rootFolder must NOT delete nb2 or subFolder; both promote to null
+  const removed = removeFolderAndUnfileNotebooks(
+    folders,
+    moved1.notebooks,
+    rootFolder.id
+  );
+  assert.equal(removed.folders.length, 2);
+  assert.equal(removed.notebooks.length, 2);
+  assert.equal(
+    removed.folders.find((f) => f.id === subFolder.id)?.parentId,
+    null
+  );
+  assert.equal(
+    removed.notebooks.find((n) => n.id === nb2.id)?.folderId,
+    null
+  );
+  // nb1 inside subFolder keeps subFolder
+  assert.equal(
+    removed.notebooks.find((n) => n.id === nb1.id)?.folderId,
+    subFolder.id
+  );
+
+  // mergeNotebook preserves local folderId across remote Live sync
+  const localWithFolder = { ...nb1, folderId: otherFolder.id };
+  const remoteWithoutFolder = { ...nb1, folderId: null, title: "ชื่อจากเพื่อน", metaUpdatedAt: nb1.metaUpdatedAt + 500 };
+  const merged = mergeNotebook(localWithFolder, remoteWithoutFolder);
+  assert.equal(merged.title, "ชื่อจากเพื่อน");
+  assert.equal(merged.folderId, otherFolder.id);
 });

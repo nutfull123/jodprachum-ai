@@ -1,12 +1,13 @@
 import type { MeetingAnalysis, SavedMeeting } from "../types/meeting";
-import type { ShootNotebook } from "../types/notebook";
+import type { NotebookFolder, ShootNotebook } from "../types/notebook";
 
 const DB_NAME = "jodprachum_local_v1";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_MEETINGS = "meetings";
 const STORE_AUDIO = "audio_blobs";
 const STORE_NOTEBOOKS = "notebooks";
 const STORE_MEDIA = "media_blobs";
+const STORE_FOLDERS = "folders";
 
 const LS_API_KEY = "jodprachum_gemini_key";
 const LS_PASSCODE = "jodprachum_passcode";
@@ -33,6 +34,9 @@ function openDatabase(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_MEDIA)) {
         db.createObjectStore(STORE_MEDIA, { keyPath: "id" });
+      }
+      if (!db.objectStoreNames.contains(STORE_FOLDERS)) {
+        db.createObjectStore(STORE_FOLDERS, { keyPath: "id" });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -238,6 +242,47 @@ export async function deleteMediaBlob(id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_MEDIA, "readwrite");
     tx.objectStore(STORE_MEDIA).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// =========================================================================
+// Notebook Folders
+// =========================================================================
+
+export async function listFolders(): Promise<NotebookFolder[]> {
+  if (typeof window === "undefined") return [];
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_FOLDERS, "readonly");
+    const req = tx.objectStore(STORE_FOLDERS).getAll();
+    req.onsuccess = () => {
+      const rows = (req.result || []) as NotebookFolder[];
+      rows.sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name, "th"));
+      resolve(rows);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function saveFolder(folder: NotebookFolder): Promise<void> {
+  if (typeof window === "undefined") return;
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_FOLDERS, "readwrite");
+    tx.objectStore(STORE_FOLDERS).put(folder);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteFolder(id: string): Promise<void> {
+  if (typeof window === "undefined") return;
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_FOLDERS, "readwrite");
+    tx.objectStore(STORE_FOLDERS).delete(id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

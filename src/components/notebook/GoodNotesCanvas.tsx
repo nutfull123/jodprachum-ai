@@ -540,7 +540,7 @@ export function GoodNotesCanvas({
         return;
       }
       const avail = Math.max(280, el.clientWidth - 24);
-      const next = Math.min(1, Number((avail / virtualWidth).toFixed(3)));
+      const next = Math.min(1.25, Number((avail / virtualWidth).toFixed(3)));
       setScale(next);
     };
 
@@ -1298,10 +1298,15 @@ export function GoodNotesCanvas({
 
                 {item.type === "text" && (
                   <div
+                    style={{
+                      backgroundColor: darkPaper
+                        ? "rgba(30, 41, 59, 0.72)"
+                        : "rgba(255, 255, 255, 0.85)",
+                    }}
                     className={`h-full w-full rounded-xl border border-transparent p-2.5 ${
                       darkPaper
-                        ? "bg-slate-800/70 hover:border-slate-600"
-                        : "bg-white/80 hover:border-stone-300"
+                        ? "hover:border-slate-600"
+                        : "hover:border-stone-300"
                     }`}
                   >
                     {isEditing ? (

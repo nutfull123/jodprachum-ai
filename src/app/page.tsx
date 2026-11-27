@@ -15,8 +15,12 @@ import type {
   MeetingTask,
   SavedMeeting,
 } from "../types/meeting";
-import type { ShootNotebook } from "../types/notebook";
+import type { NotebookFolder, ShootNotebook } from "../types/notebook";
 import { uploadAndAnalyzeAudio, type AnalyzeProgress } from "../lib/analyze-client";
+import {
+  moveNotebookToFolder,
+  removeFolderAndUnfileNotebooks,
+} from "../lib/folder-utils";
 import { buildMindMapTree } from "../lib/mindmap-builder";
 import { formatSeconds } from "../lib/mime";
 import {
@@ -29,14 +33,17 @@ import {
 import { createSampleMeeting } from "../lib/sample-meeting";
 import {
   clearAllMeetings,
+  deleteFolder,
   deleteMeeting,
   deleteNotebook,
   getAudioBlob,
   getStoredApiKey,
   getStoredPasscode,
   getStoredTheme,
+  listFolders,
   listMeetings,
   listNotebooks,
+  saveFolder,
   saveMeeting,
   saveNotebook,
   setStoredApiKey,
@@ -148,9 +155,13 @@ export default function HomePage() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [sidebarMobileOpen, setSidebarMobileOpen] = useState(false);
 
-  // ShootNote notebooks state
+  // ShootNote notebooks & folders state
   const [notebooks, setNotebooks] = useState<ShootNotebook[]>([]);
+  const [folders, setFolders] = useState<NotebookFolder[]>([]);
   const [activeNotebookId, setActiveNotebookId] = useState<string | null>(null);
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  const [notebookView, setNotebookView] = useState<"home" | "editor">("home");
+  const [topChromeCollapsed, setTopChromeCollapsed] = useState(false);
   const [pendingJoinRoomCode, setPendingJoinRoomCode] = useState<
     string | undefined
   >(undefined);
@@ -272,8 +283,17 @@ export default function HomePage() {
     const roomParam = params.get("room")?.trim().toUpperCase();
     if (roomParam) {
       setWorkspaceMode("notebook");
+      setNotebookView("editor");
       setPendingJoinRoomCode(roomParam);
     }
+
+    listFolders()
+      .then((folderRows) => {
+        setFolders(folderRows);
+      })
+      .catch(() => {
+        setFolders([]);
+      });
 
     listNotebooks()
       .then((rows) => {
@@ -462,15 +482,58 @@ export default function HomePage() {
 
   const handleNewAction = () => {
     if (workspaceMode === "notebook") {
-      const nb = createEmptyNotebook("notebook");
+      const nb = createEmptyNotebook("notebook", undefined, currentFolderId);
       setNotebooks((prev) => [nb, ...prev]);
       setActiveNotebookId(nb.id);
+      setNotebookView("editor");
       saveNotebook(nb).catch(() => undefined);
     } else {
       setActiveMeetingId(null);
       setErrorMessage(null);
     }
   };
+
+  const handleSaveFolder = useCallback((folder: NotebookFolder) => {
+    setFolders((prev) => {
+      const idx = prev.findIndex((f) => f.id === folder.id);
+      if (idx === -1) return [...prev, folder];
+      const next = [...prev];
+      next[idx] = folder;
+      return next;
+    });
+    saveFolder(folder).catch(() => undefined);
+  }, []);
+
+  const handleDeleteFolder = useCallback(
+    async (folderId: string) => {
+      const res = removeFolderAndUnfileNotebooks(folders, notebooks, folderId);
+      setFolders(res.folders);
+      setNotebooks(res.notebooks);
+      if (currentFolderId === folderId) {
+        const deleted = folders.find((f) => f.id === folderId);
+        setCurrentFolderId(deleted?.parentId ?? null);
+      }
+      await deleteFolder(folderId).catch(() => undefined);
+      await Promise.all([
+        ...res.affectedFolders.map((f) => saveFolder(f).catch(() => undefined)),
+        ...res.affectedNotebooks.map((n) => saveNotebook(n).catch(() => undefined)),
+      ]);
+    },
+    [folders, notebooks, currentFolderId]
+  );
+
+  const handleMoveNotebook = useCallback(
+    (notebookId: string, targetFolderId: string | null) => {
+      setNotebooks((prev) => {
+        const res = moveNotebookToFolder(prev, notebookId, targetFolderId);
+        if (res.updatedNotebook) {
+          saveNotebook(res.updatedNotebook).catch(() => undefined);
+        }
+        return res.notebooks;
+      });
+    },
+    []
+  );
 
   const handleUpsertNotebook = useCallback((nb: ShootNotebook) => {
     setNotebooks((prev) => {
@@ -497,9 +560,14 @@ export default function HomePage() {
 
   const handleSendMeetingToShootNote = async () => {
     if (!activeMeeting) return;
-    const nb = createNotebookFromMeeting(activeMeeting);
+    const nb = {
+      ...createNotebookFromMeeting(activeMeeting),
+      folderId: currentFolderId,
+    };
     setNotebooks((prev) => [nb, ...prev]);
     setActiveNotebookId(nb.id);
+    setNotebookView("editor");
+    setTopChromeCollapsed(false);
     setWorkspaceMode("notebook");
     await saveNotebook(nb).catch(() => undefined);
   };
@@ -538,6 +606,8 @@ export default function HomePage() {
     };
     handleUpsertNotebook(updated);
     setActiveNotebookId(updated.id);
+    setNotebookView("editor");
+    setTopChromeCollapsed(false);
     setWorkspaceMode("notebook");
     await saveNotebook(updated).catch(() => undefined);
   };
@@ -702,6 +772,10 @@ export default function HomePage() {
   };
 
   const aiReady = Boolean(userApiKey.trim()) || hasServerKey;
+  const hideHeader =
+    workspaceMode === "notebook" &&
+    notebookView === "editor" &&
+    topChromeCollapsed;
 
   return (
     <div
@@ -711,28 +785,44 @@ export default function HomePage() {
           : "min-h-screen flex flex-col bg-paper text-ink"
       }
     >
-      <HeaderBar
-        workspaceMode={workspaceMode}
-        theme={theme}
-        hasServerKey={hasServerKey}
-        hasUserKey={Boolean(userApiKey.trim())}
-        isStandalone={isStandalone}
-        onChangeWorkspace={(mode) => {
-          setWorkspaceMode(mode);
-          setSidebarMobileOpen(false);
-        }}
-        onToggleTheme={handleToggleTheme}
-        onToggleSidebar={() => setSidebarMobileOpen(true)}
-        onNewAction={handleNewAction}
-        onLoadSample={handleLoadSample}
-        onOpenApiModal={() => setApiModalOpen(true)}
-        onOpenInstallModal={() => setInstallModalOpen(true)}
-      />
+      {!hideHeader && (
+        <HeaderBar
+          workspaceMode={workspaceMode}
+          theme={theme}
+          hasServerKey={hasServerKey}
+          hasUserKey={Boolean(userApiKey.trim())}
+          isStandalone={isStandalone}
+          showSidebarToggle={
+            workspaceMode === "meeting" || notebookView === "editor"
+          }
+          onChangeWorkspace={(mode) => {
+            setWorkspaceMode(mode);
+            setTopChromeCollapsed(false);
+            setSidebarMobileOpen(false);
+          }}
+          onLogoClick={() => {
+            setWorkspaceMode("notebook");
+            setNotebookView("home");
+            setTopChromeCollapsed(false);
+            setSidebarMobileOpen(false);
+          }}
+          onToggleTheme={handleToggleTheme}
+          onToggleSidebar={() => setSidebarMobileOpen(true)}
+          onNewAction={handleNewAction}
+          onLoadSample={handleLoadSample}
+          onOpenApiModal={() => setApiModalOpen(true)}
+          onOpenInstallModal={() => setInstallModalOpen(true)}
+        />
+      )}
 
       {workspaceMode === "notebook" ? (
         <ShootNoteWorkspace
           notebooks={notebooks}
+          folders={folders}
           activeNotebookId={activeNotebookId}
+          currentFolderId={currentFolderId}
+          notebookView={notebookView}
+          topChromeCollapsed={topChromeCollapsed}
           pendingJoinRoomCode={pendingJoinRoomCode}
           onResolvePendingJoinRoom={() => setPendingJoinRoomCode(undefined)}
           hasCloudRooms={hasCloudRooms}
@@ -742,9 +832,23 @@ export default function HomePage() {
           onOpenApiModal={() => setApiModalOpen(true)}
           sidebarMobileOpen={sidebarMobileOpen}
           onCloseSidebarMobile={() => setSidebarMobileOpen(false)}
-          onSelectNotebook={setActiveNotebookId}
+          onSelectNotebook={(id) => {
+            setActiveNotebookId(id);
+            setNotebookView("editor");
+          }}
+          onChangeView={(view) => {
+            setNotebookView(view);
+            if (view === "home") {
+              setTopChromeCollapsed(false);
+            }
+          }}
+          onChangeCurrentFolder={setCurrentFolderId}
+          onToggleTopChrome={() => setTopChromeCollapsed((v) => !v)}
           onUpsertNotebook={handleUpsertNotebook}
           onDeleteNotebook={handleDeleteNotebook}
+          onSaveFolder={handleSaveFolder}
+          onDeleteFolder={handleDeleteFolder}
+          onMoveNotebook={handleMoveNotebook}
         />
       ) : (
         <div className="mx-auto flex w-full max-w-[1440px] flex-1">

@@ -308,7 +308,8 @@ export function createSlideLayoutItems(
 
 export function createEmptyNotebook(
   kind: "notebook" | "shortnote" | "slides" = "notebook",
-  title?: string
+  title?: string,
+  folderId?: string | null
 ): ShootNotebook {
   const now = Date.now();
   const paperTemplate: PaperTemplate =
@@ -330,6 +331,7 @@ export function createEmptyNotebook(
         : kind === "shortnote"
           ? "ShootNote ด่วน"
           : "สมุดจดใหม่"),
+    folderId: folderId ?? null,
     quickBody: kind === "shortnote" ? "" : undefined,
     paperTemplate,
     pageHeight,
@@ -403,6 +405,7 @@ export function mergeNotebook(
     id: local.id || remote.id,
     kind: useRemoteMeta ? remote.kind : local.kind,
     title: useRemoteMeta ? remote.title : local.title,
+    folderId: local.folderId ?? null,
     quickBody: useRemoteMeta ? remote.quickBody : local.quickBody,
     paperTemplate: useRemoteMeta ? remote.paperTemplate : local.paperTemplate,
     pageHeight: Math.max(local.pageHeight || 1600, remote.pageHeight || 1600),

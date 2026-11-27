@@ -97,10 +97,30 @@ export interface CanvasItem {
   deleted?: boolean;
 }
 
+export interface NotebookFolder {
+  id: string;
+  name: string;
+  color: string;
+  parentId?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export const FOLDER_COLORS = [
+  { name: "เขียวมิ้นต์", hex: "#0F766E" },
+  { name: "น้ำเงินรอยัล", hex: "#2563EB" },
+  { name: "ส้มอบอุ่น", hex: "#D97706" },
+  { name: "ม่วงคราม", hex: "#7C3AED" },
+  { name: "ชมพูโรส", hex: "#DB2777" },
+  { name: "เขียวมรกต", hex: "#059669" },
+  { name: "เทาหินชนวน", hex: "#475569" },
+] as const;
+
 export interface ShootNotebook {
   id: string;
   kind: "notebook" | "shortnote" | "slides";
   title: string;
+  folderId?: string | null;
   quickBody?: string;
   paperTemplate: PaperTemplate;
   pageHeight: number;

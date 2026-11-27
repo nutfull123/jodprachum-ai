@@ -1,28 +1,35 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   BookOpen,
   FolderOpen,
+  Home,
+  PanelLeftClose,
   Plus,
   Presentation,
   Radio,
   Search,
   Trash2,
   Upload,
-  X,
   Zap,
 } from "lucide-react";
-import type { ShootNotebook } from "../../types/notebook";
+import type { NotebookFolder, ShootNotebook } from "../../types/notebook";
 
 interface NotebookSidebarProps {
   notebooks: ShootNotebook[];
+  folders: NotebookFolder[];
   activeId: string | null;
-  isOpenMobile: boolean;
-  onCloseMobile: () => void;
+  isOpen: boolean;
+  onClose: () => void;
+  onGoHome: () => void;
   onSelect: (id: string) => void;
-  onCreate: (kind: "notebook" | "shortnote" | "slides") => void;
+  onCreate: (
+    kind: "notebook" | "shortnote" | "slides",
+    folderId?: string | null
+  ) => void;
   onDelete: (id: string) => void;
+  onMoveNotebook: (notebookId: string, folderId: string | null) => void;
   onImportBackup: (file: File) => void;
 }
 
@@ -37,50 +44,85 @@ function formatShortDate(ms: number): string {
 
 export function NotebookSidebar({
   notebooks,
+  folders,
   activeId,
-  isOpenMobile,
-  onCloseMobile,
+  isOpen,
+  onClose,
+  onGoHome,
   onSelect,
   onCreate,
   onDelete,
+  onMoveNotebook,
   onImportBackup,
 }: NotebookSidebarProps) {
   const [query, setQuery] = useState("");
+  const [folderFilter, setFolderFilter] = useState<string>("all");
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
+  const foldersById = useMemo(
+    () => new Map(folders.map((f) => [f.id, f])),
+    [folders]
+  );
+
+  if (!isOpen) {
+    return null;
+  }
+
   const filtered = notebooks.filter((nb) => {
+    if (folderFilter === "__root__") {
+      if (nb.folderId) return false;
+    } else if (folderFilter !== "all") {
+      if (nb.folderId !== folderFilter) return false;
+    }
     if (!query.trim()) return true;
     return nb.title.toLowerCase().includes(query.trim().toLowerCase());
   });
 
+  const activeFolderTarget =
+    folderFilter !== "all" && folderFilter !== "__root__" ? folderFilter : null;
+
   const content = (
     <div className="flex h-full flex-col bg-white border-r border-line">
       <div className="border-b border-line p-3.5 space-y-2.5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold text-ink">
-              สมุดจด ShootNote ({notebooks.length})
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-ink truncate">
+              สมุดจด ({notebooks.length})
             </h2>
             <p className="text-[11px] text-muted">
-              บันทึกอัตโนมัติเฉพาะบนเครื่องนี้
+              บันทึกอัตโนมัติในเครื่อง
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onCloseMobile}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-paper lg:hidden"
-            aria-label="ปิดรายการสมุดจด"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onGoHome();
+              }}
+              className="inline-flex items-center gap-1 rounded-lg border border-line bg-paper px-2 py-1 text-[11px] font-semibold text-ink hover:bg-[#efede6]"
+              title="กลับไปหน้าแรก (คลังโฟลเดอร์)"
+            >
+              <Home className="h-3.5 w-3.5 text-accent" />
+              <span>หน้าแรก</span>
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-line bg-paper text-muted hover:text-ink hover:bg-[#efede6]"
+              aria-label="พับเก็บแถบซ้าย"
+              title="พับเก็บแถบรายการสมุด"
+            >
+              <PanelLeftClose className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-3 gap-1.5">
           <button
             type="button"
             onClick={() => {
-              onCreate("notebook");
-              onCloseMobile();
+              onCreate("notebook", activeFolderTarget);
             }}
             className="inline-flex items-center justify-center gap-1 rounded-xl bg-accent px-2 py-2 text-[11px] font-semibold text-white hover:bg-accent-dark transition-colors shadow-sm"
           >
@@ -91,8 +133,7 @@ export function NotebookSidebar({
           <button
             type="button"
             onClick={() => {
-              onCreate("shortnote");
-              onCloseMobile();
+              onCreate("shortnote", activeFolderTarget);
             }}
             className="inline-flex items-center justify-center gap-1 rounded-xl border border-amber-300 bg-amber-50 px-2 py-2 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 transition-colors"
           >
@@ -103,8 +144,7 @@ export function NotebookSidebar({
           <button
             type="button"
             onClick={() => {
-              onCreate("slides");
-              onCloseMobile();
+              onCreate("slides", activeFolderTarget);
             }}
             className="inline-flex items-center justify-center gap-1 rounded-xl border border-indigo-200 bg-indigo-50 px-2 py-2 text-[11px] font-semibold text-indigo-900 hover:bg-indigo-100 transition-colors"
           >
@@ -112,6 +152,23 @@ export function NotebookSidebar({
             <span>สไลด์</span>
           </button>
         </div>
+
+        {folders.length > 0 && (
+          <select
+            value={folderFilter}
+            onChange={(e) => setFolderFilter(e.target.value)}
+            aria-label="กรองตามโฟลเดอร์"
+            className="w-full rounded-lg border border-line bg-paper px-2.5 py-1.5 text-xs font-medium text-ink focus:border-accent focus:outline-none"
+          >
+            <option value="all">ทุกโฟลเดอร์ ({notebooks.length})</option>
+            <option value="__root__">นอกโฟลเดอร์ (หน้าแรก)</option>
+            {folders.map((f) => (
+              <option key={f.id} value={f.id}>
+                📁 {f.name}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       {notebooks.length > 3 && (
@@ -136,10 +193,10 @@ export function NotebookSidebar({
               <FolderOpen className="h-5 w-5" />
             </div>
             <p className="text-xs font-medium text-ink">
-              {notebooks.length === 0 ? "ยังไม่มีสมุดจด" : "ไม่พบสมุดที่ค้นหา"}
+              {notebooks.length === 0 ? "ยังไม่มีสมุดจด" : "ไม่พบสมุดในตัวกรองนี้"}
             </p>
             <p className="mt-1 text-[11px] text-muted">
-              กด &quot;+ สมุดจดยาว&quot; หรือ &quot;ShortNote&quot; เพื่อเริ่มเขียนได้เลย
+              กด &quot;+ สมุดจด&quot; หรือ &quot;Short&quot; เพื่อเริ่มเขียนได้เลย
             </p>
           </div>
         ) : (
@@ -147,13 +204,13 @@ export function NotebookSidebar({
             const isActive = nb.id === activeId;
             const visibleItems = nb.items.filter((i) => !i.deleted).length;
             const visibleStrokes = nb.strokes.filter((s) => !s.deleted).length;
+            const nbFolder = nb.folderId ? foldersById.get(nb.folderId) : null;
 
             return (
               <div
                 key={nb.id}
                 onClick={() => {
                   onSelect(nb.id);
-                  onCloseMobile();
                 }}
                 className={`group relative rounded-xl border p-2.5 transition-all cursor-pointer ${
                   isActive
@@ -201,6 +258,39 @@ export function NotebookSidebar({
                         </>
                       )}
                     </div>
+
+                    {folders.length > 0 && (
+                      <div
+                        className="mt-1.5 flex items-center gap-1.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {nbFolder && (
+                          <span
+                            className="h-2 w-2 rounded-full shrink-0"
+                            style={{ backgroundColor: nbFolder.color }}
+                          />
+                        )}
+                        <select
+                          value={nb.folderId ?? ""}
+                          onChange={(e) =>
+                            onMoveNotebook(
+                              nb.id,
+                              e.target.value ? e.target.value : null
+                            )
+                          }
+                          aria-label={`ย้ายโฟลเดอร์ของ ${nb.title}`}
+                          className="rounded border border-line bg-white/80 px-1.5 py-0.5 text-[10px] font-medium text-ink focus:border-accent focus:outline-none max-w-[165px]"
+                        >
+                          <option value="">หน้าแรก (นอกโฟลเดอร์)</option>
+                          {folders.map((f) => (
+                            <option key={f.id} value={f.id}>
+                              📁 {f.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
                     {nb.roomId && (
                       <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
                         <Radio className="h-2.5 w-2.5" />
@@ -254,21 +344,21 @@ export function NotebookSidebar({
 
   return (
     <>
-      <aside className="no-print hidden lg:block w-[280px] shrink-0 h-full overflow-hidden">
+      {/* Desktop (>= 1280px): Docked side panel when open */}
+      <aside className="no-print hidden xl:block w-[280px] shrink-0 h-full overflow-hidden">
         {content}
       </aside>
 
-      {isOpenMobile && (
-        <div className="no-print fixed inset-0 z-50 flex lg:hidden">
-          <div
-            className="fixed inset-0 bg-black/35 backdrop-blur-[1px]"
-            onClick={onCloseMobile}
-          />
-          <div className="relative z-10 h-full w-[290px] max-w-[85vw] shadow-xl">
-            {content}
-          </div>
+      {/* Tablet / iPad & Mobile (< 1280px): Non-crowding overlay drawer */}
+      <div className="no-print fixed inset-0 z-50 flex xl:hidden">
+        <div
+          className="fixed inset-0 bg-black/35 backdrop-blur-[1px]"
+          onClick={onClose}
+        />
+        <div className="relative z-10 h-full w-[290px] max-w-[85vw] shadow-xl">
+          {content}
         </div>
-      )}
+      </div>
     </>
   );
 }

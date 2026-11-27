@@ -21,7 +21,9 @@ interface HeaderBarProps {
   hasServerKey: boolean;
   hasUserKey: boolean;
   isStandalone: boolean;
+  showSidebarToggle?: boolean;
   onChangeWorkspace: (mode: WorkspaceMode) => void;
+  onLogoClick?: () => void;
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
   onNewAction: () => void;
@@ -36,7 +38,9 @@ export function HeaderBar({
   hasServerKey,
   hasUserKey,
   isStandalone,
+  showSidebarToggle = true,
   onChangeWorkspace,
+  onLogoClick,
   onToggleTheme,
   onToggleSidebar,
   onNewAction,
@@ -50,18 +54,22 @@ export function HeaderBar({
     <header className="no-print safe-top-header sticky top-0 z-30 border-b border-line bg-white/95 backdrop-blur">
       <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-2 px-3 py-2.5 sm:px-6">
         <div className="flex items-center gap-2.5 min-w-0">
-          <button
-            type="button"
-            onClick={onToggleSidebar}
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-paper text-ink hover:bg-[#efede6] lg:hidden"
-            aria-label="เปิดแถบรายการ"
-          >
-            <Menu className="h-4 w-4" />
-          </button>
+          {showSidebarToggle && (
+            <button
+              type="button"
+              onClick={onToggleSidebar}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-paper text-ink hover:bg-[#efede6] xl:hidden"
+              aria-label="เปิดแถบรายการ"
+            >
+              <Menu className="h-4 w-4" />
+            </button>
+          )}
 
           <button
             type="button"
-            onClick={() => onChangeWorkspace("notebook")}
+            onClick={() =>
+              onLogoClick ? onLogoClick() : onChangeWorkspace("notebook")
+            }
             className="flex items-center gap-2 text-left group shrink-0"
           >
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-white shadow-sm group-hover:bg-accent-dark transition-colors">

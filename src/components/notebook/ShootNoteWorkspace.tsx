@@ -4,12 +4,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftRight,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronsUp,
+  Eraser,
   FilePlus2,
+  Highlighter,
+  Home,
+  MousePointer2,
+  PanelLeft,
+  PanelLeftClose,
   PencilLine,
+  PenTool,
   Radio,
   ShieldCheck,
+  Undo2,
   X,
 } from "lucide-react";
 import {
@@ -20,6 +30,7 @@ import {
   type CanvasItem,
   type InkStroke,
   type LinkProvider,
+  type NotebookFolder,
   type NotebookPage,
   type NotebookTool,
   type PaperTemplate,
@@ -65,6 +76,7 @@ import { GoodNotesCanvas } from "./GoodNotesCanvas";
 import { InsertLinkModal } from "./InsertLinkModal";
 import { JoinRoomPromptModal } from "./JoinRoomPromptModal";
 import { MathCalculatorPanel } from "./MathCalculatorPanel";
+import { NotebookHomeView } from "./NotebookHomeView";
 import { NotebookSidebar } from "./NotebookSidebar";
 import { NotebookToolbar } from "./NotebookToolbar";
 import { ShareRoomModal } from "./ShareRoomModal";
@@ -72,7 +84,11 @@ import { SlidePresenterModal } from "./SlidePresenterModal";
 
 interface ShootNoteWorkspaceProps {
   notebooks: ShootNotebook[];
+  folders: NotebookFolder[];
   activeNotebookId: string | null;
+  currentFolderId: string | null;
+  notebookView: "home" | "editor";
+  topChromeCollapsed: boolean;
   pendingJoinRoomCode?: string;
   onResolvePendingJoinRoom?: () => void;
   hasCloudRooms?: boolean;
@@ -83,13 +99,23 @@ interface ShootNoteWorkspaceProps {
   sidebarMobileOpen: boolean;
   onCloseSidebarMobile: () => void;
   onSelectNotebook: (id: string) => void;
+  onChangeView: (view: "home" | "editor") => void;
+  onChangeCurrentFolder: (folderId: string | null) => void;
+  onToggleTopChrome: () => void;
   onUpsertNotebook: (nb: ShootNotebook) => void;
   onDeleteNotebook: (id: string) => void;
+  onSaveFolder: (folder: NotebookFolder) => void;
+  onDeleteFolder: (folderId: string) => void;
+  onMoveNotebook: (notebookId: string, targetFolderId: string | null) => void;
 }
 
 export function ShootNoteWorkspace({
   notebooks,
+  folders,
   activeNotebookId,
+  currentFolderId,
+  notebookView,
+  topChromeCollapsed,
   pendingJoinRoomCode,
   onResolvePendingJoinRoom,
   hasCloudRooms = false,
@@ -100,8 +126,14 @@ export function ShootNoteWorkspace({
   sidebarMobileOpen,
   onCloseSidebarMobile,
   onSelectNotebook,
+  onChangeView,
+  onChangeCurrentFolder,
+  onToggleTopChrome,
   onUpsertNotebook,
   onDeleteNotebook,
+  onSaveFolder,
+  onDeleteFolder,
+  onMoveNotebook,
 }: ShootNoteWorkspaceProps) {
   const activeNotebook = useMemo(
     () => notebooks.find((n) => n.id === activeNotebookId) || null,
@@ -151,6 +183,13 @@ export function ShootNoteWorkspace({
   const [peers, setPeers] = useState<PeerPresence[]>([]);
   const [savedToast, setSavedToast] = useState(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    if (sidebarMobileOpen) {
+      setLeftSidebarOpen(true);
+    }
+  }, [sidebarMobileOpen]);
 
   const showNotice = useCallback((msg: string) => {
     setStatusNotice(msg);
@@ -319,8 +358,13 @@ export function ShootNoteWorkspace({
     };
   }, [activeRoomId, onUpsertNotebook]);
 
-  const handleCreateNotebook = (kind: "notebook" | "shortnote" | "slides") => {
-    const nb = createEmptyNotebook(kind);
+  const handleCreateNotebook = (
+    kind: "notebook" | "shortnote" | "slides",
+    folderId?: string | null
+  ) => {
+    const targetFolder =
+      folderId !== undefined ? folderId : currentFolderId ?? null;
+    const nb = createEmptyNotebook(kind, undefined, targetFolder);
     onUpsertNotebook(nb);
     saveNotebook(nb).catch(() => undefined);
     onSelectNotebook(nb.id);
@@ -980,20 +1024,68 @@ export function ShootNoteWorkspace({
   const activeColor = tool === "highlighter" ? highlightColor : penColor;
   const activeSize = tool === "highlighter" ? highlightSize : penSize;
 
+  if (notebookView === "home") {
+    return (
+      <div className="flex w-full flex-1 min-h-0 flex-col overflow-hidden">
+        <NotebookHomeView
+          notebooks={notebooks}
+          folders={folders}
+          currentFolderId={currentFolderId}
+          onChangeCurrentFolder={onChangeCurrentFolder}
+          onOpenNotebook={(id) => {
+            setLeftSidebarOpen(false);
+            onCloseSidebarMobile();
+            onSelectNotebook(id);
+          }}
+          onCreateNotebook={handleCreateNotebook}
+          onDeleteNotebook={onDeleteNotebook}
+          onImportBackup={handleImportBackup}
+          onSaveFolder={onSaveFolder}
+          onDeleteFolder={onDeleteFolder}
+          onMoveNotebook={onMoveNotebook}
+        />
+
+        <JoinRoomPromptModal
+          roomCode={pendingJoinRoomCode || null}
+          initialDisplayName={collabName}
+          localNotebooks={candidateLocalNotebooks}
+          onConfirm={handleConfirmPendingJoin}
+          onCancel={handleCancelPendingJoin}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="mx-auto flex w-full max-w-[1440px] flex-1 min-h-0 overflow-hidden">
+    <div className="relative flex w-full flex-1 min-h-0 overflow-hidden">
       <NotebookSidebar
         notebooks={notebooks}
+        folders={folders}
         activeId={activeNotebookId}
-        isOpenMobile={sidebarMobileOpen}
-        onCloseMobile={onCloseSidebarMobile}
-        onSelect={onSelectNotebook}
+        isOpen={leftSidebarOpen}
+        onClose={() => {
+          setLeftSidebarOpen(false);
+          onCloseSidebarMobile();
+        }}
+        onGoHome={() => {
+          setLeftSidebarOpen(false);
+          onCloseSidebarMobile();
+          onChangeView("home");
+        }}
+        onSelect={(id) => {
+          onSelectNotebook(id);
+          if (typeof window !== "undefined" && window.innerWidth < 1280) {
+            setLeftSidebarOpen(false);
+            onCloseSidebarMobile();
+          }
+        }}
         onCreate={handleCreateNotebook}
         onDelete={onDeleteNotebook}
+        onMoveNotebook={onMoveNotebook}
         onImportBackup={handleImportBackup}
       />
 
-      <main className="flex-1 min-w-0 min-h-0 flex flex-col bg-[#ECEAE2] overflow-hidden">
+      <main className="relative flex-1 min-w-0 min-h-0 flex flex-col bg-[#ECEAE2] overflow-hidden">
         {!activeNotebook || !activePage ? (
           <div className="flex-1 flex items-center justify-center p-6">
             <div className="max-w-md w-full rounded-2xl border border-line bg-white p-6 text-center shadow-sm space-y-4">
@@ -1027,336 +1119,566 @@ export function ShootNoteWorkspace({
                   สไลด์ 16:9
                 </button>
               </div>
+              <button
+                type="button"
+                onClick={() => onChangeView("home")}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-line bg-paper px-4 py-2 text-xs font-medium text-ink hover:bg-[#efede6]"
+              >
+                <Home className="h-3.5 w-3.5 text-accent" />
+                <span>กลับหน้าแรก (คลังโฟลเดอร์)</span>
+              </button>
             </div>
           </div>
         ) : (
           <>
-            {/* Notebook Title & Sync Status Strip (pinned) */}
-            <div className="no-print shrink-0 border-b border-line bg-white px-3 py-2 sm:px-5 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0 flex-1">
-                <PencilLine className="h-4 w-4 text-accent shrink-0" />
-                <input
-                  type="text"
-                  value={activeNotebook.title}
-                  onChange={(e) => updateMeta({ title: e.target.value })}
-                  aria-label="ชื่อสมุดจด"
-                  className="min-w-[140px] flex-1 bg-transparent text-sm sm:text-base font-bold text-ink focus:outline-none focus:bg-paper rounded px-1.5 py-0.5"
+            {!topChromeCollapsed ? (
+              <>
+                {/* Notebook Title & Sync Status Strip (pinned) */}
+                <div className="no-print shrink-0 border-b border-line bg-white px-3 py-2 sm:px-5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLeftSidebarOpen(false);
+                        onCloseSidebarMobile();
+                        onChangeView("home");
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-line bg-paper px-2 py-1 text-xs font-semibold text-ink hover:bg-[#efede6] shrink-0"
+                      title="กลับหน้าแรก (คลังโฟลเดอร์)"
+                    >
+                      <Home className="h-3.5 w-3.5 text-accent" />
+                      <span className="hidden sm:inline">หน้าแรก</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setLeftSidebarOpen((v) => !v)}
+                      className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-semibold shrink-0 transition-colors ${
+                        leftSidebarOpen
+                          ? "border-accent bg-accent-soft text-accent-dark"
+                          : "border-line bg-paper text-ink hover:bg-[#efede6]"
+                      }`}
+                      title={
+                        leftSidebarOpen
+                          ? "พับเก็บแถบสมุดด้านซ้าย"
+                          : "เปิดแถบรายการสมุดด้านซ้าย"
+                      }
+                    >
+                      {leftSidebarOpen ? (
+                        <PanelLeftClose className="h-3.5 w-3.5" />
+                      ) : (
+                        <PanelLeft className="h-3.5 w-3.5" />
+                      )}
+                      <span className="hidden md:inline">แถบสมุด</span>
+                    </button>
+
+                    <PencilLine className="h-4 w-4 text-accent shrink-0 hidden sm:block" />
+                    <input
+                      type="text"
+                      value={activeNotebook.title}
+                      onChange={(e) => updateMeta({ title: e.target.value })}
+                      aria-label="ชื่อสมุดจด"
+                      className="min-w-[120px] flex-1 bg-transparent text-sm sm:text-base font-bold text-ink focus:outline-none focus:bg-paper rounded px-1.5 py-0.5"
+                    />
+
+                    {folders.length > 0 && (
+                      <select
+                        value={activeNotebook.folderId ?? ""}
+                        onChange={(e) =>
+                          onMoveNotebook(
+                            activeNotebook.id,
+                            e.target.value ? e.target.value : null
+                          )
+                        }
+                        aria-label="โฟลเดอร์ของสมุดนี้"
+                        title="ย้ายโฟลเดอร์"
+                        className="hidden sm:inline-block rounded-lg border border-line bg-paper px-2 py-1 text-[11px] font-medium text-ink focus:border-accent focus:outline-none max-w-[150px]"
+                      >
+                        <option value="">หน้าแรก</option>
+                        {folders.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            📁 {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-[11px] text-muted shrink-0">
+                    {statusNotice && (
+                      <span className="inline-flex items-center rounded-full bg-sky-50 border border-sky-200 px-2.5 py-0.5 font-medium text-sky-800">
+                        {statusNotice}
+                      </span>
+                    )}
+                    {activeNotebook.roomId && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 font-medium text-emerald-700">
+                        <Radio className="h-3 w-3 animate-pulse" />
+                        {syncStatus === "connected"
+                          ? `${cloudActive ? "Cloud" : "Live"} (${peers.length + 1})`
+                          : syncStatus === "local"
+                            ? `ในเครื่อง (${peers.length + 1}) · กำลังเชื่อมเน็ต`
+                            : syncStatus === "connecting"
+                              ? "กำลังเชื่อมห้อง..."
+                              : "ออฟไลน์"}
+                      </span>
+                    )}
+                    {palmRejection && (
+                      <span className="hidden lg:inline-flex items-center gap-1 rounded-full bg-accent-soft border border-accent/25 px-2 py-0.5 font-medium text-accent-dark">
+                        ✏️ Apple Pencil · 2 นิ้วเลื่อน/ซูม
+                      </span>
+                    )}
+                    <span className="hidden md:inline-flex items-center gap-1 text-emerald-700 font-medium">
+                      {savedToast ? (
+                        <>
+                          <Check className="h-3 w-3" />
+                          บันทึกในเครื่องแล้ว
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="h-3 w-3" />
+                          เก็บในเครื่องอัตโนมัติ
+                        </>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onToggleTopChrome}
+                      className="inline-flex items-center gap-1 rounded-lg border border-line bg-paper px-2 py-1 text-[11px] font-semibold text-ink hover:bg-[#efede6]"
+                      title="พับแถบด้านบนทั้งหมดเพื่อขยายพื้นที่กระดาษเขียน"
+                    >
+                      <ChevronsUp className="h-3.5 w-3.5 text-accent" />
+                      <span>พับด้านบน</span>
+                    </button>
+                  </div>
+                </div>
+
+                <NotebookToolbar
+                  tool={tool}
+                  color={activeColor}
+                  size={activeSize}
+                  palmRejection={palmRejection}
+                  autoShape={autoShape}
+                  calcOpen={calcOpen}
+                  paperTemplate={activePage.paperTemplate}
+                  canUndo={undoStack.length > 0}
+                  canRedo={redoStack.length > 0}
+                  roomId={activeNotebook.roomId}
+                  peerCount={peers.length}
+                  onSelectTool={setTool}
+                  onChangeColor={(c) => {
+                    if (tool === "highlighter") setHighlightColor(c);
+                    else setPenColor(c);
+                  }}
+                  onChangeSize={(s) => {
+                    if (tool === "highlighter") setHighlightSize(s);
+                    else setPenSize(s);
+                  }}
+                  onTogglePalmRejection={() => setPalmRejection((v) => !v)}
+                  onToggleAutoShape={() => setAutoShape((v) => !v)}
+                  onToggleCalc={() => setCalcOpen((v) => !v)}
+                  onChangeTemplate={(tpl: PaperTemplate) => {
+                    updateActivePage({ paperTemplate: tpl }, true);
+                    if (isDarkPaperTemplate(tpl) && penColor === "#1C1B18") {
+                      setPenColor("#FFFFFF");
+                    } else if (
+                      !isDarkPaperTemplate(tpl) &&
+                      penColor === "#FFFFFF"
+                    ) {
+                      setPenColor("#1C1B18");
+                    }
+                  }}
+                  onInsertText={() =>
+                    addCanvasItem({
+                      type: "text",
+                      x: 80,
+                      y:
+                        activeNotebook.kind === "shortnote" &&
+                        activePageIndex === 0
+                          ? 230
+                          : 90,
+                      width: 320,
+                      height: 110,
+                      text: "พิมพ์ข้อความที่นี่...",
+                      color: "#1C1B18",
+                      fontSize: 18,
+                    })
+                  }
+                  onInsertSticky={() =>
+                    addCanvasItem({
+                      type: "sticky",
+                      x: 100,
+                      y:
+                        activeNotebook.kind === "shortnote" &&
+                        activePageIndex === 0
+                          ? 230
+                          : 110,
+                      width: 280,
+                      height: 220,
+                      title: "โน้ตย่อ",
+                      text: "",
+                      bgColor: "#FEF9C3",
+                      color: "#1C1B18",
+                      fontSize: 15,
+                    })
+                  }
+                  onInsertTable={(rows, cols) => {
+                    const grid: string[][] = Array.from(
+                      { length: rows },
+                      (_, ri) =>
+                        Array.from({ length: cols }, (_, ci) =>
+                          ri === 0 ? `หัวข้อ ${ci + 1}` : ""
+                        )
+                    );
+                    addCanvasItem({
+                      type: "table",
+                      x: 80,
+                      y:
+                        activeNotebook.kind === "shortnote" &&
+                        activePageIndex === 0
+                          ? 230
+                          : 110,
+                      width: Math.min(860, cols * 160),
+                      height: rows * 52,
+                      tableData: { rows: grid, headerBg: "#0F766E" },
+                    });
+                  }}
+                  onInsertSticker={(emoji, label) =>
+                    addCanvasItem({
+                      type: "sticker",
+                      x: 140,
+                      y:
+                        activeNotebook.kind === "shortnote" &&
+                        activePageIndex === 0
+                          ? 230
+                          : 120,
+                      width: 110,
+                      height: 110,
+                      stickerEmoji: emoji,
+                      stickerLabel: label,
+                    })
+                  }
+                  onInsertShape={(shapeKind: ShapeKind) =>
+                    addCanvasItem({
+                      type: "shape",
+                      x: 110,
+                      y:
+                        activeNotebook.kind === "shortnote" &&
+                        activePageIndex === 0
+                          ? 230
+                          : 120,
+                      width: shapeKind === "circle" ? 180 : 320,
+                      height: shapeKind === "banner" ? 80 : 160,
+                      shapeKind,
+                      text: shapeKind === "banner" ? "หัวข้อสำคัญ" : "",
+                      bgColor: "#EFFAF8",
+                      color: "#0F766E",
+                      fontSize: 16,
+                    })
+                  }
+                  onOpenInsertLink={() => setLinkModalOpen(true)}
+                  onOpenPresenter={() => setPresenterOpen(true)}
+                  onUploadImage={handleUploadImage}
+                  onUploadMedia={handleUploadMedia}
+                  onUploadDocument={handleUploadDocument}
+                  onUndo={handleUndo}
+                  onRedo={handleRedo}
+                  onExportPng={handleExportPng}
+                  onExportPdf={handleExportPdf}
+                  onExportPptx={handleExportPptx}
+                  onExportJson={handleExportJson}
+                  onOpenShareModal={() => setShareModalOpen(true)}
+                  onToggleTopChrome={onToggleTopChrome}
                 />
-              </div>
 
-              <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted shrink-0">
-                {statusNotice && (
-                  <span className="inline-flex items-center rounded-full bg-sky-50 border border-sky-200 px-2.5 py-0.5 font-medium text-sky-800">
-                    {statusNotice}
-                  </span>
-                )}
-                {activeNotebook.roomId && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 font-medium text-emerald-700">
-                    <Radio className="h-3 w-3 animate-pulse" />
-                    {syncStatus === "connected"
-                      ? `${cloudActive ? "Cloud" : "Live"} (${peers.length + 1})`
-                      : syncStatus === "local"
-                        ? `ในเครื่อง (${peers.length + 1}) · กำลังเชื่อมเน็ต`
-                        : syncStatus === "connecting"
-                          ? "กำลังเชื่อมห้อง..."
-                          : "ออฟไลน์"}
-                  </span>
-                )}
-                {palmRejection && (
-                  <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-accent-soft border border-accent/25 px-2 py-0.5 font-medium text-accent-dark">
-                    ✏️ โหมด Apple Pencil · 2 นิ้วเลื่อน/ซูม
-                  </span>
-                )}
-                <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
-                  {savedToast ? (
-                    <>
-                      <Check className="h-3 w-3" />
-                      บันทึกในเครื่องแล้ว
-                    </>
+                {/* Multi-Page Navigator Strip (pinned) */}
+                <div
+                  data-page-navigator="true"
+                  className="no-print shrink-0 border-b border-line bg-paper px-3 py-1.5 sm:px-5 flex items-center justify-between gap-2"
+                >
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      disabled={activePageIndex <= 0}
+                      onClick={() =>
+                        setActivePageId(activePages[activePageIndex - 1].id)
+                      }
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-line bg-white text-ink hover:bg-paper disabled:opacity-35"
+                      aria-label="หน้าก่อนหน้า"
+                      title="หน้าก่อนหน้า"
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                    </button>
+
+                    <span className="font-mono text-[11px] font-semibold text-muted px-1 whitespace-nowrap">
+                      {activePage.aspect === "slide16x9" ? "สไลด์" : "หน้า"}{" "}
+                      {activePageIndex + 1}/{activePages.length}
+                    </span>
+
+                    <button
+                      type="button"
+                      disabled={activePageIndex >= activePages.length - 1}
+                      onClick={() =>
+                        setActivePageId(activePages[activePageIndex + 1].id)
+                      }
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-line bg-white text-ink hover:bg-paper disabled:opacity-35"
+                      aria-label="หน้าถัดไป"
+                      title="หน้าถัดไป"
+                    >
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </button>
+
+                    {activePages.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleMoveActivePage(
+                            activePageIndex < activePages.length - 1 ? 1 : -1
+                          )
+                        }
+                        className="inline-flex h-7 items-center gap-1 rounded-lg border border-line bg-white px-2 text-[11px] font-medium text-ink hover:bg-paper"
+                        title="สลับลำดับหน้านี้"
+                      >
+                        <ArrowLeftRight className="h-3 w-3 text-accent" />
+                        <span className="hidden md:inline">สลับหน้า</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 overflow-x-auto flex-1 py-0.5">
+                    {activePages.map((pg, idx) => {
+                      const isCurrent = pg.id === activePage.id;
+                      return (
+                        <div
+                          key={pg.id}
+                          className={`inline-flex items-center rounded-lg border text-xs font-medium shrink-0 transition-colors ${
+                            isCurrent
+                              ? "border-accent bg-accent text-white shadow-sm"
+                              : "border-line bg-white text-ink hover:bg-accent-soft"
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setActivePageId(pg.id)}
+                            className="px-2.5 py-1 whitespace-nowrap"
+                          >
+                            {pg.aspect === "slide16x9" ? "สไลด์" : "หน้า"}{" "}
+                            {idx + 1}
+                          </button>
+                          {activePages.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeletePage(pg.id);
+                              }}
+                              className={`pr-1.5 pl-0.5 py-1 hover:opacity-80 ${
+                                isCurrent
+                                  ? "text-white/90"
+                                  : "text-muted hover:text-rose-600"
+                              }`}
+                              aria-label={`ลบหน้า ${idx + 1}`}
+                              title={`ลบหน้า ${idx + 1}`}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {activePage.aspect === "slide16x9" ||
+                  activeNotebook.kind === "slides" ? (
+                    <div className="relative shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setSlideLayoutMenuOpen((v) => !v)}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:bg-accent-dark transition-colors shadow-sm"
+                      >
+                        <FilePlus2 className="h-3.5 w-3.5" />
+                        <span>เพิ่มสไลด์</span>
+                      </button>
+                      {slideLayoutMenuOpen && (
+                        <div className="absolute right-0 mt-1.5 w-48 rounded-xl border border-line bg-white p-1.5 shadow-lg z-30 space-y-1">
+                          {(
+                            [
+                              ["content", "สไลด์หัวข้อ + เนื้อหา"],
+                              ["two_col", "สไลด์เปรียบเทียบ 2 คอลัมน์"],
+                              ["table_chart", "สไลด์ตาราง + สรุปผล"],
+                              ["cover", "สไลด์หน้าปก"],
+                            ] as Array<[SlideLayoutPreset, string]>
+                          ).map(([preset, label]) => (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => handleAddPage(preset)}
+                              className="block w-full rounded-lg px-3 py-1.5 text-left text-xs font-medium text-ink hover:bg-paper"
+                            >
+                              {label}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => handleAddPage()}
+                            className="block w-full rounded-lg px-3 py-1.5 text-left text-xs font-medium text-muted hover:bg-paper"
+                          >
+                            สไลด์หน้าว่าง
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   ) : (
-                    <>
-                      <ShieldCheck className="h-3 w-3" />
-                      เก็บในเครื่องอัตโนมัติ
-                    </>
+                    <button
+                      type="button"
+                      onClick={() => handleAddPage()}
+                      className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:bg-accent-dark transition-colors shadow-sm"
+                    >
+                      <FilePlus2 className="h-3.5 w-3.5" />
+                      <span>เพิ่มหน้ากระดาษ</span>
+                    </button>
                   )}
-                </span>
-              </div>
-            </div>
-
-            <NotebookToolbar
-              tool={tool}
-              color={activeColor}
-              size={activeSize}
-              palmRejection={palmRejection}
-              autoShape={autoShape}
-              calcOpen={calcOpen}
-              paperTemplate={activePage.paperTemplate}
-              canUndo={undoStack.length > 0}
-              canRedo={redoStack.length > 0}
-              roomId={activeNotebook.roomId}
-              peerCount={peers.length}
-              onSelectTool={setTool}
-              onChangeColor={(c) => {
-                if (tool === "highlighter") setHighlightColor(c);
-                else setPenColor(c);
-              }}
-              onChangeSize={(s) => {
-                if (tool === "highlighter") setHighlightSize(s);
-                else setPenSize(s);
-              }}
-              onTogglePalmRejection={() => setPalmRejection((v) => !v)}
-              onToggleAutoShape={() => setAutoShape((v) => !v)}
-              onToggleCalc={() => setCalcOpen((v) => !v)}
-              onChangeTemplate={(tpl: PaperTemplate) => {
-                updateActivePage({ paperTemplate: tpl }, true);
-                if (isDarkPaperTemplate(tpl) && penColor === "#1C1B18") {
-                  setPenColor("#FFFFFF");
-                } else if (!isDarkPaperTemplate(tpl) && penColor === "#FFFFFF") {
-                  setPenColor("#1C1B18");
-                }
-              }}
-              onInsertText={() =>
-                addCanvasItem({
-                  type: "text",
-                  x: 80,
-                  y:
-                    activeNotebook.kind === "shortnote" && activePageIndex === 0
-                      ? 230
-                      : 90,
-                  width: 320,
-                  height: 110,
-                  text: "พิมพ์ข้อความที่นี่...",
-                  color: "#1C1B18",
-                  fontSize: 18,
-                })
-              }
-              onInsertSticky={() =>
-                addCanvasItem({
-                  type: "sticky",
-                  x: 100,
-                  y:
-                    activeNotebook.kind === "shortnote" && activePageIndex === 0
-                      ? 230
-                      : 110,
-                  width: 280,
-                  height: 220,
-                  title: "โน้ตย่อ",
-                  text: "",
-                  bgColor: "#FEF9C3",
-                  color: "#1C1B18",
-                  fontSize: 15,
-                })
-              }
-              onInsertTable={(rows, cols) => {
-                const grid: string[][] = Array.from({ length: rows }, (_, ri) =>
-                  Array.from({ length: cols }, (_, ci) =>
-                    ri === 0 ? `หัวข้อ ${ci + 1}` : ""
-                  )
-                );
-                addCanvasItem({
-                  type: "table",
-                  x: 80,
-                  y:
-                    activeNotebook.kind === "shortnote" && activePageIndex === 0
-                      ? 230
-                      : 110,
-                  width: Math.min(860, cols * 160),
-                  height: rows * 52,
-                  tableData: { rows: grid, headerBg: "#0F766E" },
-                });
-              }}
-              onInsertSticker={(emoji, label) =>
-                addCanvasItem({
-                  type: "sticker",
-                  x: 140,
-                  y:
-                    activeNotebook.kind === "shortnote" && activePageIndex === 0
-                      ? 230
-                      : 120,
-                  width: 110,
-                  height: 110,
-                  stickerEmoji: emoji,
-                  stickerLabel: label,
-                })
-              }
-              onInsertShape={(shapeKind: ShapeKind) =>
-                addCanvasItem({
-                  type: "shape",
-                  x: 110,
-                  y:
-                    activeNotebook.kind === "shortnote" && activePageIndex === 0
-                      ? 230
-                      : 120,
-                  width: shapeKind === "circle" ? 180 : 320,
-                  height: shapeKind === "banner" ? 80 : 160,
-                  shapeKind,
-                  text: shapeKind === "banner" ? "หัวข้อสำคัญ" : "",
-                  bgColor: "#EFFAF8",
-                  color: "#0F766E",
-                  fontSize: 16,
-                })
-              }
-              onOpenInsertLink={() => setLinkModalOpen(true)}
-              onOpenPresenter={() => setPresenterOpen(true)}
-              onUploadImage={handleUploadImage}
-              onUploadMedia={handleUploadMedia}
-              onUploadDocument={handleUploadDocument}
-              onUndo={handleUndo}
-              onRedo={handleRedo}
-              onExportPng={handleExportPng}
-              onExportPdf={handleExportPdf}
-              onExportPptx={handleExportPptx}
-              onExportJson={handleExportJson}
-              onOpenShareModal={() => setShareModalOpen(true)}
-            />
-
-            {/* Multi-Page Navigator Strip (pinned) */}
-            <div
-              data-page-navigator="true"
-              className="no-print shrink-0 border-b border-line bg-paper px-3 py-1.5 sm:px-5 flex items-center justify-between gap-2"
-            >
-              <div className="flex items-center gap-1 shrink-0">
+                </div>
+              </>
+            ) : (
+              /* Compact Floating Pill when Top Chrome is Collapsed (Full Wide Canvas) */
+              <div
+                data-collapsed-top-pill="true"
+                className="no-print absolute top-2.5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 rounded-full border border-line bg-white/95 backdrop-blur px-2.5 py-1 shadow-lg max-w-[96vw] overflow-x-auto"
+              >
                 <button
                   type="button"
-                  disabled={activePageIndex <= 0}
-                  onClick={() =>
-                    setActivePageId(activePages[activePageIndex - 1].id)
-                  }
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-line bg-white text-ink hover:bg-paper disabled:opacity-35"
-                  aria-label="หน้าก่อนหน้า"
-                  title="หน้าก่อนหน้า"
+                  data-expand-top-chrome="true"
+                  onClick={onToggleTopChrome}
+                  className="inline-flex items-center gap-1 rounded-full bg-accent px-3 py-1 text-xs font-semibold text-white hover:bg-accent-dark shrink-0 shadow-sm"
+                  title="แสดงแถบเครื่องมือและเมนูด้านบน"
                 >
-                  <ChevronLeft className="h-3.5 w-3.5" />
+                  <ChevronDown className="h-3.5 w-3.5" />
+                  <span>แสดงแถบด้านบน</span>
                 </button>
 
-                <span className="font-mono text-[11px] font-semibold text-muted px-1 whitespace-nowrap">
-                  {activePage.aspect === "slide16x9" ? "สไลด์" : "หน้า"}{" "}
-                  {activePageIndex + 1}/{activePages.length}
-                </span>
+                <button
+                  type="button"
+                  onClick={() => setLeftSidebarOpen((v) => !v)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-line bg-paper text-ink hover:bg-[#efede6] shrink-0"
+                  title="เปิด/พับแถบสมุดด้านซ้าย"
+                  aria-label="เปิดแถบสมุด"
+                >
+                  <PanelLeft className="h-3.5 w-3.5" />
+                </button>
 
                 <button
                   type="button"
-                  disabled={activePageIndex >= activePages.length - 1}
-                  onClick={() =>
-                    setActivePageId(activePages[activePageIndex + 1].id)
-                  }
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-line bg-white text-ink hover:bg-paper disabled:opacity-35"
-                  aria-label="หน้าถัดไป"
-                  title="หน้าถัดไป"
+                  onClick={() => {
+                    setLeftSidebarOpen(false);
+                    onCloseSidebarMobile();
+                    onChangeView("home");
+                  }}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-line bg-paper text-ink hover:bg-[#efede6] shrink-0"
+                  title="กลับหน้าแรก"
+                  aria-label="กลับหน้าแรก"
                 >
-                  <ChevronRight className="h-3.5 w-3.5" />
+                  <Home className="h-3.5 w-3.5" />
+                </button>
+
+                <div className="h-4 w-px bg-line mx-0.5 shrink-0" />
+
+                <button
+                  type="button"
+                  onClick={() => setTool("select")}
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-full shrink-0 ${
+                    tool === "select"
+                      ? "bg-ink text-white"
+                      : "text-muted hover:bg-paper"
+                  }`}
+                  title="เลือก/ย้าย"
+                  aria-label="เลือก"
+                >
+                  <MousePointer2 className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTool("pen")}
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-full shrink-0 ${
+                    tool === "pen"
+                      ? "bg-accent text-white"
+                      : "text-muted hover:bg-paper"
+                  }`}
+                  title="ปากกา"
+                  aria-label="ปากกา"
+                >
+                  <PenTool className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTool("highlighter")}
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-full shrink-0 ${
+                    tool === "highlighter"
+                      ? "bg-amber-400 text-ink"
+                      : "text-muted hover:bg-paper"
+                  }`}
+                  title="ไฮไลต์"
+                  aria-label="ไฮไลต์"
+                >
+                  <Highlighter className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTool("eraser")}
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-full shrink-0 ${
+                    tool === "eraser"
+                      ? "bg-rose-600 text-white"
+                      : "text-muted hover:bg-paper"
+                  }`}
+                  title="ยางลบ"
+                  aria-label="ยางลบ"
+                >
+                  <Eraser className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={undoStack.length === 0}
+                  onClick={handleUndo}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-full text-ink hover:bg-paper disabled:opacity-35 shrink-0"
+                  title="ย้อนกลับ"
+                  aria-label="ย้อนกลับ"
+                >
+                  <Undo2 className="h-3.5 w-3.5" />
                 </button>
 
                 {activePages.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleMoveActivePage(
-                        activePageIndex < activePages.length - 1 ? 1 : -1
-                      )
-                    }
-                    className="inline-flex h-7 items-center gap-1 rounded-lg border border-line bg-white px-2 text-[11px] font-medium text-ink hover:bg-paper"
-                    title="สลับลำดับหน้านี้"
-                  >
-                    <ArrowLeftRight className="h-3 w-3 text-accent" />
-                    <span className="hidden md:inline">สลับหน้า</span>
-                  </button>
+                  <>
+                    <div className="h-4 w-px bg-line mx-0.5 shrink-0" />
+                    <button
+                      type="button"
+                      disabled={activePageIndex <= 0}
+                      onClick={() =>
+                        setActivePageId(activePages[activePageIndex - 1].id)
+                      }
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-ink hover:bg-paper disabled:opacity-35 shrink-0"
+                      title="หน้าก่อนหน้า"
+                      aria-label="หน้าก่อนหน้า"
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                    </button>
+                    <span className="font-mono text-[11px] font-semibold text-muted px-0.5 whitespace-nowrap">
+                      {activePageIndex + 1}/{activePages.length}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={activePageIndex >= activePages.length - 1}
+                      onClick={() =>
+                        setActivePageId(activePages[activePageIndex + 1].id)
+                      }
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-ink hover:bg-paper disabled:opacity-35 shrink-0"
+                      title="หน้าถัดไป"
+                      aria-label="หน้าถัดไป"
+                    >
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </button>
+                  </>
                 )}
               </div>
-
-              <div className="flex items-center gap-1.5 overflow-x-auto flex-1 py-0.5">
-                {activePages.map((pg, idx) => {
-                  const isCurrent = pg.id === activePage.id;
-                  return (
-                    <div
-                      key={pg.id}
-                      className={`inline-flex items-center rounded-lg border text-xs font-medium shrink-0 transition-colors ${
-                        isCurrent
-                          ? "border-accent bg-accent text-white shadow-sm"
-                          : "border-line bg-white text-ink hover:bg-accent-soft"
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setActivePageId(pg.id)}
-                        className="px-2.5 py-1 whitespace-nowrap"
-                      >
-                        {pg.aspect === "slide16x9" ? "สไลด์" : "หน้า"} {idx + 1}
-                      </button>
-                      {activePages.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeletePage(pg.id);
-                          }}
-                          className={`pr-1.5 pl-0.5 py-1 hover:opacity-80 ${
-                            isCurrent
-                              ? "text-white/90"
-                              : "text-muted hover:text-rose-600"
-                          }`}
-                          aria-label={`ลบหน้า ${idx + 1}`}
-                          title={`ลบหน้า ${idx + 1}`}
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {activePage.aspect === "slide16x9" ||
-              activeNotebook.kind === "slides" ? (
-                <div className="relative shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setSlideLayoutMenuOpen((v) => !v)}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:bg-accent-dark transition-colors shadow-sm"
-                  >
-                    <FilePlus2 className="h-3.5 w-3.5" />
-                    <span>เพิ่มสไลด์</span>
-                  </button>
-                  {slideLayoutMenuOpen && (
-                    <div className="absolute right-0 mt-1.5 w-48 rounded-xl border border-line bg-white p-1.5 shadow-lg z-30 space-y-1">
-                      {(
-                        [
-                          ["content", "สไลด์หัวข้อ + เนื้อหา"],
-                          ["two_col", "สไลด์เปรียบเทียบ 2 คอลัมน์"],
-                          ["table_chart", "สไลด์ตาราง + สรุปผล"],
-                          ["cover", "สไลด์หน้าปก"],
-                        ] as Array<[SlideLayoutPreset, string]>
-                      ).map(([preset, label]) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          onClick={() => handleAddPage(preset)}
-                          className="block w-full rounded-lg px-3 py-1.5 text-left text-xs font-medium text-ink hover:bg-paper"
-                        >
-                          {label}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={() => handleAddPage()}
-                        className="block w-full rounded-lg px-3 py-1.5 text-left text-xs font-medium text-muted hover:bg-paper"
-                      >
-                        สไลด์หน้าว่าง
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => handleAddPage()}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:bg-accent-dark transition-colors shadow-sm"
-                >
-                  <FilePlus2 className="h-3.5 w-3.5" />
-                  <span>เพิ่มหน้ากระดาษ</span>
-                </button>
-              )}
-            </div>
+            )}
 
             <GoodNotesCanvas
               notebook={activeNotebook}

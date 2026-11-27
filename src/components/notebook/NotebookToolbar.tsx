@@ -5,6 +5,7 @@ import {
   Calculator,
   ChevronDown,
   ChevronUp,
+  ChevronsUp,
   Download,
   Eraser,
   FileUp,
@@ -72,6 +73,7 @@ interface NotebookToolbarProps {
   onExportPptx: () => void;
   onExportJson: () => void;
   onOpenShareModal: () => void;
+  onToggleTopChrome?: () => void;
 }
 
 const PEN_SIZES = [
@@ -124,6 +126,7 @@ export function NotebookToolbar({
   onExportPptx,
   onExportJson,
   onOpenShareModal,
+  onToggleTopChrome,
 }: NotebookToolbarProps) {
   const [stickerMenuOpen, setStickerMenuOpen] = useState(false);
   const [shapeMenuOpen, setShapeMenuOpen] = useState(false);
@@ -438,6 +441,19 @@ export function NotebookToolbar({
               <ChevronUp className="h-3.5 w-3.5" />
             )}
           </button>
+
+          {onToggleTopChrome && (
+            <button
+              type="button"
+              onClick={onToggleTopChrome}
+              className="inline-flex items-center gap-1 rounded-xl border border-line bg-paper px-2 py-1.5 text-[11px] font-medium text-muted hover:text-ink hover:bg-[#efede6]"
+              title="พับแถบด้านบนทั้งหมดเพื่อขยายพื้นที่กระดาษเขียน"
+              aria-label="พับแถบด้านบน"
+            >
+              <ChevronsUp className="h-3.5 w-3.5" />
+              <span className="hidden lg:inline">พับด้านบน</span>
+            </button>
+          )}
         </div>
       </div>
 
