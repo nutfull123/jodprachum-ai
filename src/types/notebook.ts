@@ -9,6 +9,10 @@ export type PaperTemplate =
   | "dark_grid"
   | "dark_dotted";
 
+export const PORTRAIT_WIDTH = 1000;
+export const SLIDE_WIDTH = 1280;
+export const SLIDE_HEIGHT = 720;
+
 export type NotebookTool = "select" | "pen" | "highlighter" | "eraser";
 
 export type StrokePoint = [number, number, number]; // [x, y, pressure]
@@ -18,6 +22,7 @@ export interface NotebookPage {
   title?: string;
   paperTemplate: PaperTemplate;
   pageHeight: number;
+  aspect?: "portrait" | "slide16x9";
   order: number;
   updatedAt: number;
   deleted?: boolean;
@@ -44,9 +49,20 @@ export type CanvasItemType =
   | "image"
   | "video"
   | "audio"
-  | "meeting_card";
+  | "meeting_card"
+  | "file"
+  | "link"
+  | "youtube"
+  | "table";
 
 export type ShapeKind = "rect" | "rounded" | "circle" | "banner";
+
+export type LinkProvider = "gdrive" | "onedrive" | "dropbox" | "pdf" | "web";
+
+export interface TableItemData {
+  rows: string[][];
+  headerBg?: string;
+}
 
 export interface CanvasItem {
   id: string;
@@ -70,13 +86,20 @@ export interface CanvasItem {
   mediaBlobId?: string;
   mimeType?: string;
   fileName?: string;
+  fileUrl?: string;
+  fileSize?: number;
+  linkUrl?: string;
+  linkProvider?: LinkProvider;
+  youtubeId?: string;
+  youtubeStart?: number;
+  tableData?: TableItemData;
   updatedAt: number;
   deleted?: boolean;
 }
 
 export interface ShootNotebook {
   id: string;
-  kind: "notebook" | "shortnote";
+  kind: "notebook" | "shortnote" | "slides";
   title: string;
   quickBody?: string;
   paperTemplate: PaperTemplate;
@@ -85,6 +108,7 @@ export interface ShootNotebook {
   strokes: InkStroke[];
   items: CanvasItem[];
   roomId?: string;
+  roomPinProtected?: boolean;
   metaUpdatedAt: number;
   createdAt: number;
   updatedAt: number;

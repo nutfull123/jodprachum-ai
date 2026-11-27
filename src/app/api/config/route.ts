@@ -1,4 +1,8 @@
 import { NextResponse } from "next/server";
+import {
+  isCloudFilesConfigured,
+  isCloudRoomsConfigured,
+} from "../../../lib/cloud-store";
 
 export const dynamic = "force-dynamic";
 
@@ -11,5 +15,7 @@ export async function GET() {
   return NextResponse.json({
     hasServerKey,
     requiresPasscode,
+    hasCloudRooms: isCloudRoomsConfigured(),
+    hasCloudFiles: isCloudFilesConfigured(),
   });
 }

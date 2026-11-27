@@ -3,16 +3,26 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpToLine,
+  Columns,
+  Download,
   Edit3,
+  ExternalLink,
   FilePlus2,
+  FileText,
+  Globe,
   Maximize2,
   Minus,
   Plus,
+  Rows,
+  Sparkles,
   Trash2,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
 import {
+  PORTRAIT_WIDTH,
+  SLIDE_HEIGHT,
+  SLIDE_WIDTH,
   STICKY_COLORS,
   isDarkPaperTemplate,
   type CanvasItem,
@@ -24,8 +34,11 @@ import {
   type ShootNotebook,
   type StrokePoint,
 } from "../../types/notebook";
+import { downloadTextFile, sanitizeFileName } from "../../lib/export-utils";
+import { formatFileSize } from "../../lib/link-utils";
 import { hitTestStroke } from "../../lib/media-utils";
 import { strokePointsToSvgPath } from "../../lib/notebook-crdt";
+import { recognizeHeldShape } from "../../lib/shape-recognizer";
 import { getMediaBlob } from "../../lib/storage";
 
 interface GoodNotesCanvasProps {
@@ -38,6 +51,7 @@ interface GoodNotesCanvasProps {
   color: string;
   size: number;
   palmRejection: boolean;
+  autoShape: boolean;
   peers: PeerPresence[];
   svgExportRef: React.RefObject<SVGSVGElement | null>;
   onAddStroke: (stroke: InkStroke) => void;
@@ -200,6 +214,87 @@ function MediaItemPlayer({ item }: { item: CanvasItem }) {
   );
 }
 
+function FileAttachmentCard({ item }: { item: CanvasItem }) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let activeUrl: string | null = null;
+    let cancelled = false;
+    if (item.fileUrl || !item.mediaBlobId) {
+      setBlobUrl(null);
+      return;
+    }
+
+    getMediaBlob(item.mediaBlobId)
+      .then((rec) => {
+        if (cancelled || !rec?.blob) return;
+        activeUrl = URL.createObjectURL(rec.blob);
+        setBlobUrl(activeUrl);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      if (activeUrl) URL.revokeObjectURL(activeUrl);
+    };
+  }, [item.fileUrl, item.mediaBlobId]);
+
+  const resolvedUrl = item.fileUrl || blobUrl || "";
+  const sizeLabel = formatFileSize(item.fileSize);
+
+  return (
+    <div
+      data-paper-card="true"
+      className="h-full w-full rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm flex flex-col justify-between gap-2"
+    >
+      <div className="flex items-start gap-2.5 min-w-0">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-sky-50 text-sky-600">
+          <FileText className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-bold text-[#1C1B18] truncate">
+            {item.fileName || item.title || "ไฟล์เอกสารแนบ"}
+          </p>
+          <p className="text-[11px] text-stone-500 truncate">
+            {item.fileUrl ? "ไฟล์บนคลาวด์ (เปิดได้ทุกเครื่อง)" : "ไฟล์ในเครื่อง"}
+            {sizeLabel ? ` · ${sizeLabel}` : ""}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        {resolvedUrl ? (
+          <>
+            <a
+              data-item-control="true"
+              href={resolvedUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[11px] font-semibold text-sky-800 hover:bg-sky-100"
+            >
+              <ExternalLink className="h-3 w-3" />
+              <span>เปิดดูในเบราว์เซอร์</span>
+            </a>
+            <a
+              data-item-control="true"
+              href={resolvedUrl}
+              download={item.fileName || "attachment"}
+              className="inline-flex items-center justify-center gap-1 rounded-lg bg-accent px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-accent-dark"
+            >
+              <Download className="h-3 w-3" />
+              <span>ดาวน์โหลด</span>
+            </a>
+          </>
+        ) : (
+          <span className="text-[11px] text-amber-700">
+            กำลังโหลดไฟล์ (หรือซิงก์ผ่านห้องคลาวด์)...
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function GoodNotesCanvas({
   notebook,
   activePage,
@@ -210,6 +305,7 @@ export function GoodNotesCanvas({
   color,
   size,
   palmRejection,
+  autoShape,
   peers,
   svgExportRef,
   onAddStroke,
@@ -224,29 +320,50 @@ export function GoodNotesCanvas({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
 
+  const isSlide = activePage.aspect === "slide16x9";
+  const virtualWidth = isSlide ? SLIDE_WIDTH : PORTRAIT_WIDTH;
+  const pageHeight = isSlide ? SLIDE_HEIGHT : activePage.pageHeight || 1600;
+
   const [scale, setScale] = useState(1);
   const [manualScale, setManualScale] = useState<number | null>(null);
+  const [snappedPill, setSnappedPill] = useState<string | null>(null);
 
   // Active ink drawing (stored in refs + direct SVG DOM updates for 120Hz Apple Pencil fluidity)
   const livePointsRef = useRef<StrokePoint[]>([]);
   const liveStylusRef = useRef(false);
   const livePathRef = useRef<SVGPathElement | null>(null);
   const rafIdRef = useRef<number | null>(null);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const snappedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const strokeStartTimeRef = useRef(0);
   const activePointerIdRef = useRef<number | null>(null);
   const activePointerTypeRef = useRef<string | null>(null);
   const erasedInDragRef = useRef<Set<string>>(new Set());
   const lastCursorSentRef = useRef(0);
 
+  const twoFingerRef = useRef<{
+    active: boolean;
+    prevMidX: number;
+    prevMidY: number;
+    prevDist: number;
+  }>({ active: false, prevMidX: 0, prevMidY: 0, prevDist: 0 });
+
   const toolRef = useRef(tool);
   toolRef.current = tool;
   const palmRejectionRef = useRef(palmRejection);
   palmRejectionRef.current = palmRejection;
+  const autoShapeRef = useRef(autoShape);
+  autoShapeRef.current = autoShape;
   const colorRef = useRef(color);
   colorRef.current = color;
   const sizeRef = useRef(size);
   sizeRef.current = size;
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
+  const virtualWidthRef = useRef(virtualWidth);
+  virtualWidthRef.current = virtualWidth;
+  const pageHeightRef = useRef(pageHeight);
+  pageHeightRef.current = pageHeight;
 
   // Item selection / drag / resize / inline text edit
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
@@ -280,10 +397,12 @@ export function GoodNotesCanvas({
       if (rafIdRef.current !== null) {
         cancelAnimationFrame(rafIdRef.current);
       }
+      if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+      if (snappedTimerRef.current) clearTimeout(snappedTimerRef.current);
     };
   }, []);
 
-  // Native non-passive iPadOS Safari touch guard so Apple Pencil never scrolls or gets cancelled mid-stroke
+  // Native non-passive iPadOS Safari touch guard + 2-finger Pan & Pinch-Zoom
   useEffect(() => {
     const surfaceEl = surfaceRef.current;
     if (!surfaceEl) return;
@@ -308,7 +427,35 @@ export function GoodNotesCanvas({
       return false;
     };
 
-    const handleTouchGuard = (ev: TouchEvent) => {
+    const handleTouchStart = (ev: TouchEvent) => {
+      if (ev.touches.length === 2) {
+        ev.preventDefault();
+        // Cancel any stray 1-finger ink dot placed right before the 2nd finger landed
+        if (
+          activePointerIdRef.current !== null &&
+          activePointerTypeRef.current !== "pen" &&
+          Date.now() - strokeStartTimeRef.current < 180
+        ) {
+          activePointerIdRef.current = null;
+          activePointerTypeRef.current = null;
+          if (holdTimerRef.current) {
+            clearTimeout(holdTimerRef.current);
+            holdTimerRef.current = null;
+          }
+          livePointsRef.current = [];
+          livePathRef.current?.setAttribute("d", "");
+        }
+        const t0 = ev.touches[0];
+        const t1 = ev.touches[1];
+        twoFingerRef.current = {
+          active: true,
+          prevMidX: (t0.clientX + t1.clientX) / 2,
+          prevMidY: (t0.clientY + t1.clientY) / 2,
+          prevDist: Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY),
+        };
+        return;
+      }
+
       if (toolRef.current === "select") return;
       if (hasStylusTouch(ev) || activePointerTypeRef.current === "pen") {
         ev.preventDefault();
@@ -319,15 +466,66 @@ export function GoodNotesCanvas({
       }
     };
 
-    surfaceEl.addEventListener("touchstart", handleTouchGuard, {
+    const handleTouchMove = (ev: TouchEvent) => {
+      if (ev.touches.length === 2 && twoFingerRef.current.active) {
+        ev.preventDefault();
+        const t0 = ev.touches[0];
+        const t1 = ev.touches[1];
+        const midX = (t0.clientX + t1.clientX) / 2;
+        const midY = (t0.clientY + t1.clientY) / 2;
+        const dist = Math.hypot(
+          t1.clientX - t0.clientX,
+          t1.clientY - t0.clientY
+        );
+
+        const vp = viewportRef.current;
+        if (vp) {
+          vp.scrollLeft -= midX - twoFingerRef.current.prevMidX;
+          vp.scrollTop -= midY - twoFingerRef.current.prevMidY;
+        }
+        if (twoFingerRef.current.prevDist > 12 && dist > 12) {
+          const factor = dist / twoFingerRef.current.prevDist;
+          if (Math.abs(factor - 1) > 0.015) {
+            const nextScale = Math.max(
+              0.35,
+              Math.min(2.0, Number((scaleRef.current * factor).toFixed(3)))
+            );
+            setManualScale(nextScale);
+            twoFingerRef.current.prevDist = dist;
+          }
+        }
+        twoFingerRef.current.prevMidX = midX;
+        twoFingerRef.current.prevMidY = midY;
+        return;
+      }
+
+      if (toolRef.current === "select") return;
+      if (hasStylusTouch(ev) || activePointerTypeRef.current === "pen") {
+        ev.preventDefault();
+        return;
+      }
+      if (!palmRejectionRef.current && ev.touches.length === 1) {
+        ev.preventDefault();
+      }
+    };
+
+    const handleTouchEnd = (ev: TouchEvent) => {
+      if (ev.touches.length < 2) {
+        twoFingerRef.current.active = false;
+      }
+    };
+
+    surfaceEl.addEventListener("touchstart", handleTouchStart, {
       passive: false,
     });
-    surfaceEl.addEventListener("touchmove", handleTouchGuard, {
+    surfaceEl.addEventListener("touchmove", handleTouchMove, {
       passive: false,
     });
+    surfaceEl.addEventListener("touchend", handleTouchEnd, { passive: true });
     return () => {
-      surfaceEl.removeEventListener("touchstart", handleTouchGuard);
-      surfaceEl.removeEventListener("touchmove", handleTouchGuard);
+      surfaceEl.removeEventListener("touchstart", handleTouchStart);
+      surfaceEl.removeEventListener("touchmove", handleTouchMove);
+      surfaceEl.removeEventListener("touchend", handleTouchEnd);
     };
   }, []);
 
@@ -342,7 +540,7 @@ export function GoodNotesCanvas({
         return;
       }
       const avail = Math.max(280, el.clientWidth - 24);
-      const next = Math.min(1, Number((avail / VIRTUAL_WIDTH).toFixed(3)));
+      const next = Math.min(1, Number((avail / virtualWidth).toFixed(3)));
       setScale(next);
     };
 
@@ -350,7 +548,7 @@ export function GoodNotesCanvas({
     const ro = new ResizeObserver(updateFit);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [manualScale]);
+  }, [manualScale, virtualWidth]);
 
   const visibleStrokes = useMemo(
     () =>
@@ -378,7 +576,6 @@ export function GoodNotesCanvas({
     [notebook.items]
   );
 
-  const pageHeight = activePage.pageHeight || 1600;
   const darkPaper = isDarkPaperTemplate(activePage.paperTemplate);
 
   const toCanvasCoords = (clientX: number, clientY: number) => {
@@ -388,13 +585,24 @@ export function GoodNotesCanvas({
     return {
       x: Math.max(
         0,
-        Math.min(VIRTUAL_WIDTH, (clientX - rect.left) / currentScale)
+        Math.min(virtualWidthRef.current, (clientX - rect.left) / currentScale)
       ),
-      y: Math.max(0, Math.min(pageHeight, (clientY - rect.top) / currentScale)),
+      y: Math.max(
+        0,
+        Math.min(pageHeightRef.current, (clientY - rect.top) / currentScale)
+      ),
     };
   };
 
+  const cancelHoldTimer = () => {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+  };
+
   const clearLivePath = () => {
+    cancelHoldTimer();
     if (rafIdRef.current !== null) {
       cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = null;
@@ -435,6 +643,34 @@ export function GoodNotesCanvas({
     });
   };
 
+  const scheduleHoldShapeSnap = () => {
+    cancelHoldTimer();
+    if (
+      !autoShapeRef.current ||
+      (toolRef.current !== "pen" && toolRef.current !== "highlighter")
+    ) {
+      return;
+    }
+    holdTimerRef.current = setTimeout(() => {
+      holdTimerRef.current = null;
+      if (
+        activePointerIdRef.current === null ||
+        livePointsRef.current.length < 8
+      ) {
+        return;
+      }
+      const snapped = recognizeHeldShape(livePointsRef.current);
+      if (!snapped) return;
+      livePointsRef.current = snapped.points;
+      renderLivePathNow();
+      setSnappedPill(snapped.labelTh);
+      if (snappedTimerRef.current) clearTimeout(snappedTimerRef.current);
+      snappedTimerRef.current = setTimeout(() => {
+        setSnappedPill(null);
+      }, 1500);
+    }, 450);
+  };
+
   const handleSurfacePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (tool === "select") {
       if (!(e.target as HTMLElement).closest("[data-canvas-item='true']")) {
@@ -453,6 +689,7 @@ export function GoodNotesCanvas({
       return;
     }
 
+    if (twoFingerRef.current.active) return;
     if (palmRejection && e.pointerType !== "pen") return;
     if (e.pointerType !== "pen" && (e.target as HTMLElement).closest("textarea")) {
       return;
@@ -470,6 +707,7 @@ export function GoodNotesCanvas({
     }
     activePointerIdRef.current = e.pointerId;
     activePointerTypeRef.current = e.pointerType;
+    strokeStartTimeRef.current = Date.now();
 
     const { x, y } = toCanvasCoords(e.clientX, e.clientY);
 
@@ -515,7 +753,7 @@ export function GoodNotesCanvas({
               ...act.item,
               x: Math.max(
                 0,
-                Math.min(VIRTUAL_WIDTH - 40, Math.round(act.item.x + dx))
+                Math.min(virtualWidth - 40, Math.round(act.item.x + dx))
               ),
               y: Math.max(
                 0,
@@ -528,7 +766,7 @@ export function GoodNotesCanvas({
               width: Math.max(
                 64,
                 Math.min(
-                  VIRTUAL_WIDTH - act.item.x,
+                  virtualWidth - act.item.x,
                   Math.round(act.item.width + dx)
                 )
               ),
@@ -540,6 +778,7 @@ export function GoodNotesCanvas({
       return;
     }
 
+    if (twoFingerRef.current.active) return;
     if (activePointerIdRef.current !== e.pointerId) return;
     if (tool === "select") return;
     if (palmRejection && e.pointerType !== "pen") return;
@@ -589,6 +828,7 @@ export function GoodNotesCanvas({
 
     if (added) {
       scheduleLivePathRender();
+      scheduleHoldShapeSnap();
     }
   };
 
@@ -654,7 +894,7 @@ export function GoodNotesCanvas({
       <div
         className="mx-auto transition-transform duration-100"
         style={{
-          width: `${Math.round(VIRTUAL_WIDTH * scale)}px`,
+          width: `${Math.round(virtualWidth * scale)}px`,
           height: `${Math.round(pageHeight * scale)}px`,
         }}
       >
@@ -667,7 +907,7 @@ export function GoodNotesCanvas({
           onPointerUp={(e) => finishPointerInteraction(e, false)}
           onPointerCancel={(e) => finishPointerInteraction(e, true)}
           style={{
-            width: `${VIRTUAL_WIDTH}px`,
+            width: `${virtualWidth}px`,
             height: `${pageHeight}px`,
             transform: `scale(${scale})`,
             transformOrigin: "top left",
@@ -811,6 +1051,118 @@ export function GoodNotesCanvas({
                             title={sc.name}
                           />
                         ))}
+                      </div>
+                    )}
+
+                    {item.type === "table" && item.tableData && (
+                      <div className="flex items-center gap-1 px-1 border-l border-stone-200">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const rows = item.tableData!.rows;
+                            const cols = Math.max(1, rows[0]?.length || 3);
+                            onUpdateItem({
+                              ...item,
+                              height: item.height + 42,
+                              tableData: {
+                                ...item.tableData!,
+                                rows: [...rows, new Array(cols).fill("")],
+                              },
+                              updatedAt: Date.now(),
+                            });
+                          }}
+                          className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-teal-700 hover:bg-teal-50 inline-flex items-center gap-0.5"
+                          title="เพิ่มแถว"
+                        >
+                          <Rows className="h-3 w-3" />
+                          +แถว
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const rows = item.tableData!.rows;
+                            if (rows.length <= 2) return;
+                            onUpdateItem({
+                              ...item,
+                              height: Math.max(110, item.height - 42),
+                              tableData: {
+                                ...item.tableData!,
+                                rows: rows.slice(0, -1),
+                              },
+                              updatedAt: Date.now(),
+                            });
+                          }}
+                          className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-stone-600 hover:bg-stone-100"
+                          title="ลบแถวท้ายสุด"
+                        >
+                          -แถว
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextRows = item.tableData!.rows.map((r) => [
+                              ...r,
+                              "",
+                            ]);
+                            onUpdateItem({
+                              ...item,
+                              width: Math.min(virtualWidth - item.x, item.width + 110),
+                              tableData: { ...item.tableData!, rows: nextRows },
+                              updatedAt: Date.now(),
+                            });
+                          }}
+                          className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 hover:bg-indigo-50 inline-flex items-center gap-0.5"
+                          title="เพิ่มคอลัมน์"
+                        >
+                          <Columns className="h-3 w-3" />
+                          +คอลัมน์
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const rows = item.tableData!.rows;
+                            if ((rows[0]?.length || 0) <= 2) return;
+                            onUpdateItem({
+                              ...item,
+                              width: Math.max(200, item.width - 100),
+                              tableData: {
+                                ...item.tableData!,
+                                rows: rows.map((r) => r.slice(0, -1)),
+                              },
+                              updatedAt: Date.now(),
+                            });
+                          }}
+                          className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-stone-600 hover:bg-stone-100"
+                          title="ลบคอลัมน์ท้ายสุด"
+                        >
+                          -คอลัมน์
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const csv =
+                              "\uFEFF" +
+                              item
+                                .tableData!.rows.map((row) =>
+                                  row
+                                    .map(
+                                      (cell) =>
+                                        `"${String(cell || "").replace(/"/g, '""')}"`
+                                    )
+                                    .join(",")
+                                )
+                                .join("\n");
+                            downloadTextFile(
+                              csv,
+                              `${sanitizeFileName(notebook.title)}-table.csv`,
+                              "text/csv;charset=utf-8;"
+                            );
+                          }}
+                          className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-50"
+                          title="ส่งออกตารางเป็น CSV"
+                        >
+                          CSV
+                        </button>
                       </div>
                     )}
 
@@ -1042,6 +1394,164 @@ export function GoodNotesCanvas({
                   <MediaItemPlayer item={item} />
                 )}
 
+                {item.type === "file" && <FileAttachmentCard item={item} />}
+
+                {item.type === "link" && (
+                  <div
+                    data-paper-card="true"
+                    className="h-full w-full rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm flex flex-col justify-between gap-2"
+                  >
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-teal-50 text-accent">
+                        <Globe className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-700 uppercase">
+                            {item.linkProvider === "gdrive"
+                              ? "Google Drive"
+                              : item.linkProvider === "onedrive"
+                                ? "OneDrive"
+                                : item.linkProvider === "dropbox"
+                                  ? "Dropbox"
+                                  : item.linkProvider === "pdf"
+                                    ? "PDF"
+                                    : "ลิงก์เว็บ"}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs font-bold text-[#1C1B18] truncate">
+                          {item.title || "ลิงก์เอกสารวิจัย"}
+                        </p>
+                        <p className="text-[11px] text-stone-500 truncate">
+                          {item.linkUrl}
+                        </p>
+                      </div>
+                    </div>
+
+                    {item.linkUrl && (
+                      <a
+                        data-item-control="true"
+                        href={item.linkUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-accent-dark"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        <span>เปิดดู / ดาวน์โหลดในเบราว์เซอร์</span>
+                      </a>
+                    )}
+                  </div>
+                )}
+
+                {item.type === "youtube" && (
+                  <div
+                    data-paper-card="true"
+                    className="h-full w-full rounded-2xl border border-rose-200 bg-white shadow-sm overflow-hidden flex flex-col"
+                  >
+                    <div className="flex items-center justify-between gap-2 bg-rose-50 border-b border-rose-100 px-3 py-1.5 shrink-0 cursor-move">
+                      <span className="text-xs font-bold text-rose-900 truncate">
+                        ▶ {item.title || "วิดีโอ YouTube"}
+                      </span>
+                      {item.linkUrl && (
+                        <a
+                          data-item-control="true"
+                          href={item.linkUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[11px] font-semibold text-rose-700 hover:underline shrink-0"
+                        >
+                          เปิด YouTube
+                        </a>
+                      )}
+                    </div>
+                    {item.youtubeId && (
+                      <iframe
+                        src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(
+                          item.youtubeId
+                        )}?rel=0${
+                          item.youtubeStart ? `&start=${item.youtubeStart}` : ""
+                        }`}
+                        title={item.title || "YouTube Video"}
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen
+                        className="w-full flex-1 border-0 bg-black"
+                      />
+                    )}
+                  </div>
+                )}
+
+                {item.type === "table" && item.tableData && (
+                  <div
+                    data-paper-card="true"
+                    className="h-full w-full rounded-xl border border-slate-300 bg-white shadow-sm overflow-auto"
+                  >
+                    <table className="w-full h-full border-collapse text-xs">
+                      <tbody>
+                        {item.tableData.rows.map((row, rIdx) => (
+                          <tr key={rIdx}>
+                            {row.map((cell, cIdx) => {
+                              const isHeader = rIdx === 0;
+                              return (
+                                <td
+                                  key={cIdx}
+                                  style={
+                                    isHeader
+                                      ? {
+                                          backgroundColor:
+                                            item.tableData?.headerBg ||
+                                            "#0F766E",
+                                          color: "#FFFFFF",
+                                        }
+                                      : undefined
+                                  }
+                                  className={`border border-slate-200 p-1.5 align-top ${
+                                    isHeader
+                                      ? "font-bold"
+                                      : rIdx % 2 === 1
+                                        ? "bg-white text-[#1C1B18]"
+                                        : "bg-[#F8F7F4] text-[#1C1B18]"
+                                  }`}
+                                >
+                                  <input
+                                    type="text"
+                                    data-item-control="true"
+                                    value={cell}
+                                    readOnly={tool !== "select"}
+                                    onChange={(e) => {
+                                      const nextRows =
+                                        item.tableData!.rows.map((rw, ri) =>
+                                          ri === rIdx
+                                            ? rw.map((v, ci) =>
+                                                ci === cIdx ? e.target.value : v
+                                              )
+                                            : rw
+                                        );
+                                      onUpdateItem({
+                                        ...item,
+                                        tableData: {
+                                          ...item.tableData!,
+                                          rows: nextRows,
+                                        },
+                                        updatedAt: Date.now(),
+                                      });
+                                    }}
+                                    placeholder={isHeader ? "หัวข้อ" : "..."}
+                                    className={`w-full bg-transparent text-xs focus:outline-none ${
+                                      isHeader
+                                        ? "text-white placeholder:text-white/60 font-semibold"
+                                        : "text-[#1C1B18] placeholder:text-stone-300"
+                                    }`}
+                                  />
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
                 {isSelected && (
                   <div
                     data-item-control="true"
@@ -1066,9 +1576,9 @@ export function GoodNotesCanvas({
           {/* Vector SVG Ink Layer */}
           <svg
             ref={svgExportRef}
-            width={VIRTUAL_WIDTH}
+            width={virtualWidth}
             height={pageHeight}
-            viewBox={`0 0 ${VIRTUAL_WIDTH} ${pageHeight}`}
+            viewBox={`0 0 ${virtualWidth} ${pageHeight}`}
             xmlns="http://www.w3.org/2000/svg"
             className="pointer-events-none absolute inset-0 z-30"
           >
@@ -1111,25 +1621,35 @@ export function GoodNotesCanvas({
       </div>
 
       {/* Bottom Page Actions: Add New Page + Extend Current Page */}
-      <div className="no-print mx-auto mt-4 flex max-w-[1000px] flex-wrap items-center justify-center gap-2.5 pb-8">
+      <div className="no-print mx-auto mt-4 flex max-w-[1280px] flex-wrap items-center justify-center gap-2.5 pb-8">
         <button
           type="button"
           onClick={onAddPage}
           className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-accent-dark transition-colors"
         >
           <FilePlus2 className="h-3.5 w-3.5" />
-          <span>เพิ่มหน้ากระดาษใหม่</span>
+          <span>{isSlide ? "เพิ่มสไลด์หน้าใหม่" : "เพิ่มหน้ากระดาษใหม่"}</span>
         </button>
 
-        <button
-          type="button"
-          onClick={onExtendPage}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-line bg-white px-4 py-2 text-xs font-semibold text-ink shadow-sm hover:bg-paper transition-colors"
-        >
-          <Plus className="h-3.5 w-3.5 text-accent" />
-          <span>เพิ่มความยาวหน้านี้ (+1,000 px)</span>
-        </button>
+        {!isSlide && (
+          <button
+            type="button"
+            onClick={onExtendPage}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-line bg-white px-4 py-2 text-xs font-semibold text-ink shadow-sm hover:bg-paper transition-colors"
+          >
+            <Plus className="h-3.5 w-3.5 text-accent" />
+            <span>เพิ่มความยาวหน้านี้ (+1,000 px)</span>
+          </button>
+        )}
       </div>
+
+      {/* Hold-to-Snap feedback pill */}
+      {snappedPill && (
+        <div className="no-print fixed top-44 left-1/2 -translate-x-1/2 z-40 inline-flex items-center gap-1.5 rounded-full bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-lg">
+          <Sparkles className="h-3.5 w-3.5" />
+          <span>ดัดเป็น{snappedPill}อัตโนมัติ</span>
+        </div>
+      )}
 
       {/* Floating Zoom Pill */}
       <div className="no-print fixed bottom-4 right-4 z-30 inline-flex items-center gap-1 rounded-full border border-line bg-white/95 px-2 py-1 shadow-lg backdrop-blur">

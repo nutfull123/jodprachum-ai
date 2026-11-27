@@ -3,8 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Check,
+  Cloud,
   Copy,
+  KeyRound,
   Link2,
+  Lock,
   LogOut,
   Radio,
   RefreshCw,
@@ -20,6 +23,10 @@ interface ShareRoomModalProps {
   roomId?: string;
   activeNotebookTitle?: string;
   syncStatus: RoomSyncStatus;
+  cloudConfigured: boolean;
+  cloudActive: boolean;
+  pinRequired: boolean;
+  roomPinProtected?: boolean;
   peers: PeerPresence[];
   displayName: string;
   onChangeDisplayName: (name: string) => void;
@@ -30,6 +37,8 @@ interface ShareRoomModalProps {
   ) => void;
   onLeaveRoom: () => void;
   onForceSync?: () => void;
+  onSubmitRoomPin?: (pin: string) => void;
+  onSetCloudRoomPin?: (newPin: string | null) => Promise<boolean>;
   onClose: () => void;
 }
 
@@ -38,6 +47,10 @@ export function ShareRoomModal({
   roomId,
   activeNotebookTitle,
   syncStatus,
+  cloudConfigured,
+  cloudActive,
+  pinRequired,
+  roomPinProtected,
   peers,
   displayName,
   onChangeDisplayName,
@@ -45,6 +58,8 @@ export function ShareRoomModal({
   onJoinRoom,
   onLeaveRoom,
   onForceSync,
+  onSubmitRoomPin,
+  onSetCloudRoomPin,
   onClose,
 }: ShareRoomModalProps) {
   const [nameInput, setNameInput] = useState("");
@@ -53,6 +68,9 @@ export function ShareRoomModal({
   const [mergeCurrentNotebook, setMergeCurrentNotebook] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [syncRequested, setSyncRequested] = useState(false);
+  const [pinEntry, setPinEntry] = useState("");
+  const [newPinInput, setNewPinInput] = useState("");
+  const [pinSavedMsg, setPinSavedMsg] = useState("");
   const nameInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -61,6 +79,9 @@ export function ShareRoomModal({
       setNameError("");
       setJoinInput("");
       setMergeCurrentNotebook(false);
+      setPinEntry("");
+      setNewPinInput("");
+      setPinSavedMsg("");
     }
   }, [isOpen, displayName]);
 
@@ -105,7 +126,6 @@ export function ShareRoomModal({
     if (!raw) return;
     if (!ensureValidName()) return;
 
-    // Extract ?room=... if user pasted a full URL
     let extracted = raw;
     try {
       if (raw.startsWith("http")) {
@@ -144,7 +164,7 @@ export function ShareRoomModal({
                 แชร์งานทำร่วมกันแบบเรียลไทม์ (ฟรี 100%)
               </h2>
               <p className="text-xs text-muted">
-                ส่งลิงก์ให้เพื่อนเปิดพร้อมกัน เขียนปากกา/แปะโน้ตเห็นสดๆ และเซฟลงเครื่องแต่ละคน
+                ส่งลิงก์ให้เพื่อนเปิดพร้อมกัน เขียนปากกา/แปะไฟล์วิจัยเห็นสดๆ
               </p>
             </div>
           </div>
@@ -160,6 +180,26 @@ export function ShareRoomModal({
         </div>
 
         <div className="p-5 space-y-4 max-h-[82vh] overflow-y-auto">
+          {/* Cloud 24/7 Status Badge */}
+          <div
+            className={`rounded-xl border px-3.5 py-2.5 text-xs flex items-center gap-2 ${
+              cloudConfigured || cloudActive
+                ? "border-sky-200 bg-sky-50/70 text-sky-900"
+                : "border-line bg-paper text-muted"
+            }`}
+          >
+            <Cloud
+              className={`h-4 w-4 shrink-0 ${
+                cloudConfigured || cloudActive ? "text-sky-600" : "text-muted"
+              }`}
+            />
+            <span>
+              {cloudConfigured || cloudActive
+                ? "คลาวด์ 24 ชม. (Upstash Redis) พร้อมใช้งาน — ปิดแอปแยกทำแล้วกลับมาดึง/รวมงานได้ตลอดเวลา"
+                : "โหมดซิงก์สดตรง (ต้องเปิดพร้อมกัน) · เปิดคลาวด์ 24 ชม. ฟรีเพิ่มได้ใน Vercel Storage (ดู CLOUD_SETUP.md)"}
+            </span>
+          </div>
+
           {/* Display Name */}
           <div>
             <label
@@ -219,6 +259,31 @@ export function ShareRoomModal({
                 </span>
               </div>
 
+              {pinRequired && onSubmitRoomPin && (
+                <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 space-y-2">
+                  <p className="flex items-center gap-1.5 text-xs font-semibold text-amber-900">
+                    <Lock className="h-3.5 w-3.5" />
+                    ห้องคลาวด์นี้ล็อกด้วยรหัส PIN กรุณากรอกเพื่อดึง/บันทึกข้อมูล
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      value={pinEntry}
+                      onChange={(e) => setPinEntry(e.target.value)}
+                      placeholder="กรอกรหัส PIN ห้อง"
+                      className="flex-1 rounded-lg border border-amber-200 bg-white px-3 py-1.5 text-xs text-ink focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onSubmitRoomPin(pinEntry)}
+                      className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"
+                    >
+                      ปลดล็อก
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-center gap-2">
                 <input
                   type="text"
@@ -261,6 +326,49 @@ export function ShareRoomModal({
                       {p.name}
                     </span>
                   ))}
+                </div>
+              )}
+
+              {(cloudConfigured || cloudActive) && onSetCloudRoomPin && !pinRequired && (
+                <div className="rounded-lg border border-emerald-200/80 bg-white/80 p-2.5 space-y-1.5">
+                  <label className="flex items-center gap-1 text-[11px] font-semibold text-emerald-900">
+                    <KeyRound className="h-3 w-3" />
+                    <span>
+                      รหัส PIN ห้องคลาวด์ {roomPinProtected ? "(ล็อกอยู่)" : "(ไม่บังคับ)"}
+                    </span>
+                  </label>
+                  <div className="flex gap-1.5">
+                    <input
+                      type="text"
+                      value={newPinInput}
+                      onChange={(e) => setNewPinInput(e.target.value)}
+                      placeholder="ตั้ง PIN 4–8 หลัก (เว้นว่างถ้าไม่ล็อก)"
+                      className="flex-1 rounded-lg border border-line bg-paper px-2.5 py-1 text-xs text-ink"
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const ok = await onSetCloudRoomPin(
+                          newPinInput.trim() || null
+                        );
+                        setPinSavedMsg(
+                          ok
+                            ? newPinInput.trim()
+                              ? "ตั้ง PIN แล้ว"
+                              : "ปลดล็อก PIN แล้ว"
+                            : "บันทึก PIN ไม่สำเร็จ"
+                        );
+                      }}
+                      className="rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700"
+                    >
+                      บันทึก PIN
+                    </button>
+                  </div>
+                  {pinSavedMsg && (
+                    <p className="text-[11px] font-medium text-emerald-800">
+                      {pinSavedMsg}
+                    </p>
+                  )}
                 </div>
               )}
 

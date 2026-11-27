@@ -21,7 +21,10 @@ import { buildMindMapTree } from "../lib/mindmap-builder";
 import { formatSeconds } from "../lib/mime";
 import {
   createEmptyNotebook,
+  createMeetingPageItems,
   createNotebookFromMeeting,
+  createNotebookPage,
+  ensureNotebookPages,
 } from "../lib/notebook-crdt";
 import { createSampleMeeting } from "../lib/sample-meeting";
 import {
@@ -160,6 +163,8 @@ export default function HomePage() {
   // Auth / config state
   const [hasServerKey, setHasServerKey] = useState(false);
   const [requiresPasscode, setRequiresPasscode] = useState(false);
+  const [hasCloudRooms, setHasCloudRooms] = useState(false);
+  const [hasCloudFiles, setHasCloudFiles] = useState(false);
   const [userApiKey, setUserApiKey] = useState("");
   const [userPasscode, setUserPasscode] = useState("");
   const [apiModalOpen, setApiModalOpen] = useState(false);
@@ -301,12 +306,23 @@ export default function HomePage() {
 
     fetch("/api/config")
       .then((res) => (res.ok ? res.json() : null))
-      .then((cfg: { hasServerKey?: boolean; requiresPasscode?: boolean } | null) => {
-        if (cfg) {
-          setHasServerKey(Boolean(cfg.hasServerKey));
-          setRequiresPasscode(Boolean(cfg.requiresPasscode));
+      .then(
+        (
+          cfg: {
+            hasServerKey?: boolean;
+            requiresPasscode?: boolean;
+            hasCloudRooms?: boolean;
+            hasCloudFiles?: boolean;
+          } | null
+        ) => {
+          if (cfg) {
+            setHasServerKey(Boolean(cfg.hasServerKey));
+            setRequiresPasscode(Boolean(cfg.requiresPasscode));
+            setHasCloudRooms(Boolean(cfg.hasCloudRooms));
+            setHasCloudFiles(Boolean(cfg.hasCloudFiles));
+          }
         }
-      })
+      )
       .catch(() => undefined);
 
     // PWA standalone detection, service worker registration & install prompt capture
@@ -488,6 +504,44 @@ export default function HomePage() {
     await saveNotebook(nb).catch(() => undefined);
   };
 
+  const handleInsertMeetingIntoActiveNotebook = async () => {
+    if (!activeMeeting) return;
+    const targetNb =
+      notebooks.find((n) => n.id === activeNotebookId) || notebooks[0];
+    if (!targetNb) {
+      await handleSendMeetingToShootNote();
+      return;
+    }
+
+    const rawPages =
+      targetNb.pages && targetNb.pages.length > 0
+        ? targetNb.pages
+        : ensureNotebookPages(targetNb);
+    const maxOrder = Math.max(-1, ...rawPages.map((p) => p.order));
+    const maxZ = Math.max(0, ...targetNb.items.map((i) => i.zIndex || 0));
+
+    const newPageId = `page-ai-${Date.now()}`;
+    const built = createMeetingPageItems(activeMeeting, newPageId, maxZ + 1);
+    const newPage = createNotebookPage(
+      maxOrder + 1,
+      "lined",
+      built.pageHeight,
+      newPageId,
+      "portrait"
+    );
+
+    const updated: ShootNotebook = {
+      ...targetNb,
+      pages: [...rawPages, newPage],
+      items: [...targetNb.items, ...built.items],
+      updatedAt: Date.now(),
+    };
+    handleUpsertNotebook(updated);
+    setActiveNotebookId(updated.id);
+    setWorkspaceMode("notebook");
+    await saveNotebook(updated).catch(() => undefined);
+  };
+
   const handleStartAnalyze = async (payload: {
     file: Blob;
     fileName: string;
@@ -650,7 +704,13 @@ export default function HomePage() {
   const aiReady = Boolean(userApiKey.trim()) || hasServerKey;
 
   return (
-    <div className="min-h-screen flex flex-col bg-paper text-ink">
+    <div
+      className={
+        workspaceMode === "notebook"
+          ? "h-[100dvh] overflow-hidden flex flex-col bg-paper text-ink"
+          : "min-h-screen flex flex-col bg-paper text-ink"
+      }
+    >
       <HeaderBar
         workspaceMode={workspaceMode}
         theme={theme}
@@ -675,6 +735,11 @@ export default function HomePage() {
           activeNotebookId={activeNotebookId}
           pendingJoinRoomCode={pendingJoinRoomCode}
           onResolvePendingJoinRoom={() => setPendingJoinRoomCode(undefined)}
+          hasCloudRooms={hasCloudRooms}
+          hasCloudFiles={hasCloudFiles}
+          apiKey={userApiKey}
+          passcode={userPasscode}
+          onOpenApiModal={() => setApiModalOpen(true)}
           sidebarMobileOpen={sidebarMobileOpen}
           onCloseSidebarMobile={() => setSidebarMobileOpen(false)}
           onSelectNotebook={setActiveNotebookId}
@@ -751,13 +816,23 @@ export default function HomePage() {
                     </div>
 
                     <div className="no-print flex flex-wrap items-center gap-2">
+                      {notebooks.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleInsertMeetingIntoActiveNotebook}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-accent bg-accent-soft px-3 py-1.5 text-xs font-semibold text-accent-dark hover:bg-accent hover:text-white transition-colors shadow-sm"
+                        >
+                          <PenTool className="h-3.5 w-3.5" />
+                          <span>แทรกเป็นหน้าใหม่ในสมุดที่เปิดอยู่</span>
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={handleSendMeetingToShootNote}
                         className="inline-flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1.5 text-xs font-semibold text-white hover:bg-black transition-colors shadow-sm"
                       >
                         <PenTool className="h-3.5 w-3.5 text-amber-300" />
-                        <span>ส่งเข้าสมุด ShootNote (เขียนปากกาต่อ)</span>
+                        <span>ส่งเข้าสมุดใหม่ (เขียนปากกาต่อ)</span>
                       </button>
                       <ExportMenu meeting={activeMeeting} />
                     </div>

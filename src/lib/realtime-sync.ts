@@ -31,6 +31,7 @@ export type NotebookDelta =
 
 export interface RoomSyncCallbacks {
   roomId: string;
+  initialPin?: string;
   getDisplayName: () => string;
   onFullState: (notebook: ShootNotebook) => void;
   onDelta: (delta: NotebookDelta) => void;
@@ -42,6 +43,8 @@ export interface RoomSyncCallbacks {
   ) => void;
   onPeersChange: (peers: PeerPresence[]) => void;
   onStatusChange: (status: RoomSyncStatus) => void;
+  onCloudStatusChange?: (active: boolean) => void;
+  onPinRequired?: () => void;
   getCurrentNotebook: () => ShootNotebook | null;
 }
 
@@ -57,6 +60,8 @@ export interface RoomSyncSession {
   broadcastCursor: (x: number, y: number, tool: NotebookTool) => void;
   requestSync: () => void;
   announcePresence: () => void;
+  setRoomPin: (pin: string) => void;
+  updateCloudRoomPin: (newPin: string | null) => Promise<boolean>;
   leave: () => void;
 }
 
@@ -94,7 +99,7 @@ interface SyncEnvelope {
   payload?: unknown;
 }
 
-const MAX_SYNC_MEDIA_BYTES = 10 * 1024 * 1024; // 10 MB per shared clip
+const MAX_SYNC_MEDIA_BYTES = 10 * 1024 * 1024;
 const MEDIA_PACKET_CHARS = 12 * 1024;
 const FRAME_CHUNK_LIMIT = 18_000;
 const FRAME_CHUNK_SIZE = 16_000;
@@ -133,12 +138,15 @@ export async function createRoomSyncSession(
 ): Promise<RoomSyncSession> {
   const {
     roomId,
+    initialPin,
     getDisplayName,
     onFullState,
     onDelta,
     onMediaBlob,
     onPeersChange,
     onStatusChange,
+    onCloudStatusChange,
+    onPinRequired,
     getCurrentNotebook,
   } = opts;
 
@@ -153,12 +161,21 @@ export async function createRoomSyncSession(
   >();
   const incomingMedia = new Map<
     string,
-    { mimeType: string; fileName: string; total: number; chunks: string[]; received: number }
+    {
+      mimeType: string;
+      fileName: string;
+      total: number;
+      chunks: string[];
+      received: number;
+    }
   >();
 
   let closed = false;
   let connectedBrokers = 0;
   let bc: BroadcastChannel | null = null;
+  let activePin = (initialPin || "").trim();
+  let cloudActive = false;
+  let cloudPushTimer: ReturnType<typeof setTimeout> | null = null;
   const mqttClients: MqttWsClientHandle[] = [];
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -166,7 +183,7 @@ export async function createRoomSyncSession(
 
   const updateConnectionStatus = () => {
     if (closed) return;
-    if (connectedBrokers > 0) {
+    if (connectedBrokers > 0 || cloudActive) {
       onStatusChange("connected");
     } else if (bc) {
       onStatusChange("local");
@@ -212,6 +229,102 @@ export async function createRoomSyncSession(
       lastSeen: Date.now(),
     });
     emitPeers();
+  };
+
+  // Optional 24/7 Cloud Room Sync (Upstash Redis via /api/rooms/[roomId])
+  const pullCloudRoom = async () => {
+    if (closed || typeof fetch === "undefined") return;
+    try {
+      const headers: Record<string, string> = {};
+      if (activePin) headers["x-room-pin"] = activePin;
+
+      const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
+        method: "GET",
+        headers,
+        cache: "no-store",
+      });
+
+      if (res.status === 401) {
+        cloudActive = true;
+        onCloudStatusChange?.(true);
+        onPinRequired?.();
+        return;
+      }
+      if (!res.ok) return;
+
+      const data = (await res.json()) as {
+        configured?: boolean;
+        notebook?: ShootNotebook | null;
+      };
+      if (!data?.configured) {
+        cloudActive = false;
+        onCloudStatusChange?.(false);
+        return;
+      }
+
+      cloudActive = true;
+      onCloudStatusChange?.(true);
+      updateConnectionStatus();
+
+      if (data.notebook) {
+        onFullState(data.notebook);
+      } else {
+        const localNb = getCurrentNotebook();
+        if (hasNotebookContent(localNb)) {
+          await pushCloudRoom(localNb);
+        }
+      }
+    } catch {
+      // Cloud optional; continue seamlessly via MQTT-WSS + IndexedDB
+    }
+  };
+
+  const pushCloudRoom = async (
+    nb: ShootNotebook,
+    setPinOverride?: string | null
+  ): Promise<boolean> => {
+    if (closed || typeof fetch === "undefined") return false;
+    try {
+      const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          notebook: nb,
+          pin: activePin || undefined,
+          setPin: setPinOverride,
+        }),
+      });
+      if (res.status === 401) {
+        onPinRequired?.();
+        return false;
+      }
+      if (!res.ok) return false;
+      const data = (await res.json()) as {
+        configured?: boolean;
+        notebook?: ShootNotebook | null;
+      };
+      if (!data?.configured) return false;
+      cloudActive = true;
+      onCloudStatusChange?.(true);
+      if (data.notebook) {
+        onFullState(data.notebook);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const scheduleCloudPush = () => {
+    if (closed) return;
+    if (cloudPushTimer) clearTimeout(cloudPushTimer);
+    cloudPushTimer = setTimeout(() => {
+      cloudPushTimer = null;
+      const current = getCurrentNotebook();
+      if (hasNotebookContent(current)) {
+        pushCloudRoom(current).catch(() => undefined);
+      }
+    }, 900);
   };
 
   const handleMediaPacket = (packet: MediaChunkPacket) => {
@@ -273,7 +386,6 @@ export async function createRoomSyncSession(
       return;
     }
 
-    // Large payload (e.g. notebook with embedded images / many strokes) -> split cleanly
     const transferId = makeShortId("tx");
     const total = Math.ceil(serialized.length / FRAME_CHUNK_SIZE);
     for (let i = 0; i < total; i += 1) {
@@ -362,7 +474,6 @@ export async function createRoomSyncSession(
       const info = (msg.payload || {}) as { name?: string };
       upsertPeer(msg.senderId, { name: info.name });
 
-      // Respond with our presence + current notebook state if we have content
       dispatchEnvelope("presence", { name: getDisplayName().trim() || "ฉัน" });
       const nb = getCurrentNotebook();
       if (hasNotebookContent(nb)) {
@@ -421,7 +532,6 @@ export async function createRoomSyncSession(
     }
   };
 
-  // 1. BroadcastChannel for instant same-browser multi-tab sync
   if (typeof window !== "undefined" && "BroadcastChannel" in window) {
     try {
       bc = new BroadcastChannel(`shootnote-room-v2-${roomId}`);
@@ -434,7 +544,6 @@ export async function createRoomSyncSession(
     }
   }
 
-  // 2. Dual-broker MQTT over WSS (cross-device across Safari, iPad, 4G/5G NAT, desktop)
   if (typeof window !== "undefined" && typeof WebSocket !== "undefined") {
     DEFAULT_MQTT_BROKERS.forEach((brokerUrl, idx) => {
       const client = createMqttWsClient({
@@ -444,7 +553,6 @@ export async function createRoomSyncSession(
         onConnect: () => {
           connectedBrokers += 1;
           updateConnectionStatus();
-          // Announce presence & sync with everyone in the room as soon as connected
           dispatchEnvelope("hello", { name: getDisplayName().trim() || "ฉัน" });
           const nb = getCurrentNotebook();
           if (hasNotebookContent(nb)) {
@@ -477,14 +585,13 @@ export async function createRoomSyncSession(
     });
   }
 
-  // Initial local hello & periodic presence heartbeat (keeps online friend list steady)
   dispatchEnvelope("hello", { name: getDisplayName().trim() || "ฉัน" });
+  pullCloudRoom().catch(() => undefined);
 
   const heartbeatInterval = setInterval(() => {
     if (closed) return;
     dispatchEnvelope("presence", { name: getDisplayName().trim() || "ฉัน" });
 
-    // Prune stale chunks > 30s
     const now = Date.now();
     for (const [txId, entry] of pendingChunks.entries()) {
       if (now - entry.createdAt > 30_000) {
@@ -498,11 +605,13 @@ export async function createRoomSyncSession(
     broadcastFullState(nb: ShootNotebook) {
       if (closed) return;
       dispatchEnvelope("full", nb);
+      scheduleCloudPush();
     },
 
     broadcastDelta(delta: NotebookDelta) {
       if (closed) return;
       dispatchEnvelope("delta", delta);
+      scheduleCloudPush();
     },
 
     async broadcastMediaBlob(
@@ -548,6 +657,7 @@ export async function createRoomSyncSession(
       if (hasNotebookContent(nb)) {
         dispatchEnvelope("full", nb);
       }
+      pullCloudRoom().catch(() => undefined);
     },
 
     announcePresence() {
@@ -555,10 +665,26 @@ export async function createRoomSyncSession(
       dispatchEnvelope("presence", { name: getDisplayName().trim() || "ฉัน" });
     },
 
+    setRoomPin(pin: string) {
+      activePin = pin.trim();
+      pullCloudRoom().catch(() => undefined);
+    },
+
+    async updateCloudRoomPin(newPin: string | null): Promise<boolean> {
+      const nb = getCurrentNotebook();
+      if (!nb) return false;
+      const ok = await pushCloudRoom(nb, newPin);
+      if (ok) {
+        activePin = (newPin || "").trim();
+      }
+      return ok;
+    },
+
     leave() {
       closed = true;
       dispatchEnvelope("bye");
       clearInterval(heartbeatInterval);
+      if (cloudPushTimer) clearTimeout(cloudPushTimer);
       for (const timer of pendingTimers) {
         clearTimeout(timer);
       }

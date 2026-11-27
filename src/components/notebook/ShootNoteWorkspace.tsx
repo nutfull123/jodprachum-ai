@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeftRight,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -14,9 +15,11 @@ import {
 import {
   GOODNOTES_COLORS,
   HIGHLIGHTER_COLORS,
+  SLIDE_HEIGHT,
   isDarkPaperTemplate,
   type CanvasItem,
   type InkStroke,
+  type LinkProvider,
   type NotebookPage,
   type NotebookTool,
   type PaperTemplate,
@@ -24,16 +27,21 @@ import {
   type ShapeKind,
   type ShootNotebook,
 } from "../../types/notebook";
-import { compressImageToDataUrl } from "../../lib/media-utils";
+import { formatFileSize } from "../../lib/link-utils";
+import {
+  compressFileLosslessIfBeneficial,
+  compressImageToDataUrl,
+} from "../../lib/media-utils";
 import {
   attachNotebookToRoom,
   createEmptyNotebook,
   createGuestRoomNotebook,
   createNotebookPage,
+  createSlideLayoutItems,
   ensureNotebookPages,
   generateRoomCode,
   mergeNotebook,
-  strokePointsToSvgPath,
+  type SlideLayoutPreset,
 } from "../../lib/notebook-crdt";
 import {
   createRoomSyncSession,
@@ -42,6 +50,11 @@ import {
   type RoomSyncStatus,
 } from "../../lib/realtime-sync";
 import {
+  exportNotebookToPdf,
+  exportNotebookToPptx,
+  renderNotebookPageToCanvas,
+} from "../../lib/slide-export";
+import {
   getDisplayName,
   saveMediaBlob,
   saveNotebook,
@@ -49,16 +62,24 @@ import {
 } from "../../lib/storage";
 import { downloadTextFile, sanitizeFileName } from "../../lib/export-utils";
 import { GoodNotesCanvas } from "./GoodNotesCanvas";
+import { InsertLinkModal } from "./InsertLinkModal";
 import { JoinRoomPromptModal } from "./JoinRoomPromptModal";
+import { MathCalculatorPanel } from "./MathCalculatorPanel";
 import { NotebookSidebar } from "./NotebookSidebar";
 import { NotebookToolbar } from "./NotebookToolbar";
 import { ShareRoomModal } from "./ShareRoomModal";
+import { SlidePresenterModal } from "./SlidePresenterModal";
 
 interface ShootNoteWorkspaceProps {
   notebooks: ShootNotebook[];
   activeNotebookId: string | null;
   pendingJoinRoomCode?: string;
   onResolvePendingJoinRoom?: () => void;
+  hasCloudRooms?: boolean;
+  hasCloudFiles?: boolean;
+  apiKey?: string;
+  passcode?: string;
+  onOpenApiModal: () => void;
   sidebarMobileOpen: boolean;
   onCloseSidebarMobile: () => void;
   onSelectNotebook: (id: string) => void;
@@ -71,6 +92,11 @@ export function ShootNoteWorkspace({
   activeNotebookId,
   pendingJoinRoomCode,
   onResolvePendingJoinRoom,
+  hasCloudRooms = false,
+  hasCloudFiles = false,
+  apiKey,
+  passcode,
+  onOpenApiModal,
   sidebarMobileOpen,
   onCloseSidebarMobile,
   onSelectNotebook,
@@ -106,17 +132,32 @@ export function ShootNoteWorkspace({
   const [penSize, setPenSize] = useState<number>(6);
   const [highlightSize, setHighlightSize] = useState<number>(22);
   const [palmRejection, setPalmRejection] = useState<boolean>(false);
+  const [autoShape, setAutoShape] = useState<boolean>(true);
+  const [calcOpen, setCalcOpen] = useState<boolean>(false);
+  const [linkModalOpen, setLinkModalOpen] = useState<boolean>(false);
+  const [presenterOpen, setPresenterOpen] = useState<boolean>(false);
+  const [slideLayoutMenuOpen, setSlideLayoutMenuOpen] = useState<boolean>(false);
 
   // Undo/Redo snapshots per notebook edit session
   const [undoStack, setUndoStack] = useState<ShootNotebook[]>([]);
   const [redoStack, setRedoStack] = useState<ShootNotebook[]>([]);
 
-  // Live Share / P2P Room state
+  // Live Share / Cloud Room state
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [collabName, setCollabName] = useState("");
   const [syncStatus, setSyncStatus] = useState<RoomSyncStatus>("offline");
+  const [cloudActive, setCloudActive] = useState(false);
+  const [pinRequired, setPinRequired] = useState(false);
   const [peers, setPeers] = useState<PeerPresence[]>([]);
   const [savedToast, setSavedToast] = useState(false);
+  const [statusNotice, setStatusNotice] = useState<string | null>(null);
+
+  const showNotice = useCallback((msg: string) => {
+    setStatusNotice(msg);
+    setTimeout(() => {
+      setStatusNotice((curr) => (curr === msg ? null : curr));
+    }, 3500);
+  }, []);
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const syncSessionRef = useRef<RoomSyncSession | null>(null);
@@ -252,6 +293,15 @@ export function ShootNoteWorkspace({
       onStatusChange: (status) => {
         if (!cancelled) setSyncStatus(status);
       },
+      onCloudStatusChange: (active) => {
+        if (!cancelled) setCloudActive(active);
+      },
+      onPinRequired: () => {
+        if (!cancelled) {
+          setPinRequired(true);
+          setShareModalOpen(true);
+        }
+      },
     }).then((session) => {
       if (cancelled) {
         session.leave();
@@ -262,12 +312,14 @@ export function ShootNoteWorkspace({
 
     return () => {
       cancelled = true;
+      setCloudActive(false);
+      setPinRequired(false);
       syncSessionRef.current?.leave();
       syncSessionRef.current = null;
     };
   }, [activeRoomId, onUpsertNotebook]);
 
-  const handleCreateNotebook = (kind: "notebook" | "shortnote") => {
+  const handleCreateNotebook = (kind: "notebook" | "shortnote" | "slides") => {
     const nb = createEmptyNotebook(kind);
     onUpsertNotebook(nb);
     saveNotebook(nb).catch(() => undefined);
@@ -278,23 +330,78 @@ export function ShootNoteWorkspace({
     return nb.pages && nb.pages.length > 0 ? nb.pages : ensureNotebookPages(nb);
   };
 
-  const handleAddPage = () => {
+  const handleAddPage = (slideLayout?: SlideLayoutPreset) => {
     if (!activeNotebook || !activePage) return;
     const rawPages = getRawPages(activeNotebook);
     const maxOrder = Math.max(-1, ...rawPages.map((p) => p.order));
+    const isSlides =
+      activeNotebook.kind === "slides" || activePage.aspect === "slide16x9";
     const newPage = createNotebookPage(
       maxOrder + 1,
       activePage.paperTemplate,
-      1600
+      isSlides ? SLIDE_HEIGHT : 1600,
+      undefined,
+      isSlides ? "slide16x9" : "portrait"
     );
+    const layoutItems =
+      isSlides && slideLayout
+        ? createSlideLayoutItems(slideLayout, newPage.id)
+        : [];
     const next: ShootNotebook = {
       ...activeNotebook,
       pages: [...rawPages, newPage],
+      items: [...activeNotebook.items, ...layoutItems],
       updatedAt: Date.now(),
     };
     commitNotebookUpdate(next, true);
     setActivePageId(newPage.id);
+    setSlideLayoutMenuOpen(false);
     syncSessionRef.current?.broadcastDelta({ type: "page", page: newPage });
+    layoutItems.forEach((item) =>
+      syncSessionRef.current?.broadcastDelta({ type: "item", item })
+    );
+  };
+
+  const handleMoveActivePage = (direction: -1 | 1) => {
+    if (!activeNotebook || !activePage) return;
+    const targetIdx = activePageIndex + direction;
+    if (targetIdx < 0 || targetIdx >= activePages.length) return;
+
+    const currentPg = activePages[activePageIndex];
+    const swapPg = activePages[targetIdx];
+    const now = Date.now();
+
+    const updatedCurrent: NotebookPage = {
+      ...currentPg,
+      order: swapPg.order,
+      updatedAt: now,
+    };
+    const updatedSwap: NotebookPage = {
+      ...swapPg,
+      order: currentPg.order,
+      updatedAt: now,
+    };
+
+    const rawPages = getRawPages(activeNotebook);
+    const nextPages = rawPages.map((p) =>
+      p.id === updatedCurrent.id
+        ? updatedCurrent
+        : p.id === updatedSwap.id
+          ? updatedSwap
+          : p
+    );
+
+    const next: ShootNotebook = {
+      ...activeNotebook,
+      pages: nextPages,
+      updatedAt: now,
+    };
+    commitNotebookUpdate(next, true);
+    syncSessionRef.current?.broadcastDelta({
+      type: "page",
+      page: updatedCurrent,
+    });
+    syncSessionRef.current?.broadcastDelta({ type: "page", page: updatedSwap });
   };
 
   const handleDeletePage = (pageIdToDelete: string) => {
@@ -505,8 +612,8 @@ export function ShootNoteWorkspace({
   const handleUploadImage = async (file: File) => {
     if (!activeNotebook) return;
     try {
-      const { dataUrl, width, height } = await compressImageToDataUrl(file);
-      const ratio = Math.min(380 / width, 380 / height, 1);
+      const res = await compressImageToDataUrl(file, 2048, 0.88);
+      const ratio = Math.min(420 / res.width, 420 / res.height, 1);
       addCanvasItem({
         type: "image",
         x: 90,
@@ -514,14 +621,98 @@ export function ShootNoteWorkspace({
           activeNotebook.kind === "shortnote" && activePageIndex === 0
             ? 230
             : 120,
-        width: Math.max(140, Math.round(width * ratio)),
-        height: Math.max(120, Math.round(height * ratio)),
-        dataUrl,
+        width: Math.max(140, Math.round(res.width * ratio)),
+        height: Math.max(120, Math.round(res.height * ratio)),
+        dataUrl: res.dataUrl,
         fileName: file.name,
-        mimeType: file.type,
+        fileSize: res.compressedBytes,
+        mimeType: res.mimeType,
       });
+      if (res.savedPercent > 0) {
+        showNotice(
+          `บีบอัดรูปอัตโนมัติ -${res.savedPercent}% (${formatFileSize(res.originalBytes)} → ${formatFileSize(res.compressedBytes)}) คมชัดสูงสุด 2048px`
+        );
+      }
     } catch {
-      // Ignore unreadable image
+      showNotice("ไม่สามารถอ่านไฟล์รูปภาพนี้ได้");
+    }
+  };
+
+  const handleUploadDocument = async (file: File) => {
+    if (!activeNotebook) return;
+    try {
+      const prepared = await compressFileLosslessIfBeneficial(file);
+      let cloudUrl: string | undefined;
+
+      if (hasCloudFiles && prepared.blob.size <= 4.4 * 1024 * 1024) {
+        const form = new FormData();
+        const uploadFile = new File([prepared.blob], prepared.fileName, {
+          type: prepared.mimeType,
+        });
+        form.append("file", uploadFile);
+        const upRes = await fetch("/api/files/upload", {
+          method: "POST",
+          body: form,
+        }).catch(() => null);
+        if (upRes?.ok) {
+          const upJson = (await upRes.json()) as {
+            configured?: boolean;
+            url?: string;
+            downloadUrl?: string;
+          };
+          if (upJson.configured && upJson.url) {
+            cloudUrl = upJson.url;
+          }
+        }
+      }
+
+      const mediaId = `file-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      if (!cloudUrl) {
+        await saveMediaBlob(
+          mediaId,
+          prepared.blob,
+          prepared.mimeType,
+          prepared.fileName
+        ).catch(() => undefined);
+      }
+
+      addCanvasItem({
+        type: "file",
+        x: 90,
+        y:
+          activeNotebook.kind === "shortnote" && activePageIndex === 0
+            ? 230
+            : 130,
+        width: 340,
+        height: 112,
+        title: prepared.fileName,
+        fileName: prepared.fileName,
+        fileSize: prepared.finalBytes,
+        fileUrl: cloudUrl,
+        mediaBlobId: cloudUrl ? undefined : mediaId,
+        mimeType: prepared.mimeType,
+      });
+
+      if (!cloudUrl) {
+        syncSessionRef.current
+          ?.broadcastMediaBlob(
+            mediaId,
+            prepared.blob,
+            prepared.mimeType,
+            prepared.fileName
+          )
+          .catch(() => undefined);
+      }
+
+      showNotice(
+        cloudUrl
+          ? `อัปโหลดไฟล์ "${prepared.fileName}" ขึ้นคลาวด์แล้ว`
+          : prepared.compressed
+            ? `แนบไฟล์ "${prepared.fileName}" (บีบอัด lossless ประหยัดพื้นที่)`
+            : `แนบไฟล์ "${prepared.fileName}" ลงสมุดแล้ว`
+      );
+    } catch {
+      showNotice("เกิดข้อผิดพลาดระหว่างแนบไฟล์");
     }
   };
 
@@ -544,11 +735,48 @@ export function ShootNoteWorkspace({
       mediaBlobId: mediaId,
       mimeType,
       fileName: file.name,
+      fileSize: file.size,
     });
 
     syncSessionRef.current
       ?.broadcastMediaBlob(mediaId, file, mimeType, file.name)
       .catch(() => undefined);
+  };
+
+  const handleExportPng = async () => {
+    if (!activeNotebook || !activePage) return;
+    const canvas = await renderNotebookPageToCanvas(
+      activeNotebook,
+      activePage,
+      activePageIndex
+    );
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${sanitizeFileName(activeNotebook.title)}-p${activePageIndex + 1}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, "image/png");
+  };
+
+  const handleExportPdf = async () => {
+    if (!activeNotebook) return;
+    showNotice("กำลังสร้างไฟล์ PDF ทุกหน้า...");
+    await exportNotebookToPdf(activeNotebook).catch(() =>
+      showNotice("ส่งออก PDF ไม่สำเร็จ")
+    );
+  };
+
+  const handleExportPptx = async () => {
+    if (!activeNotebook) return;
+    showNotice("กำลังสร้างไฟล์ PowerPoint (.pptx)...");
+    await exportNotebookToPptx(activeNotebook).catch(() =>
+      showNotice("ส่งออก PowerPoint ไม่สำเร็จ")
+    );
   };
 
   const handleUndo = () => {
@@ -569,133 +797,6 @@ export function ShootNoteWorkspace({
     onUpsertNotebook(next);
     saveNotebook(next).catch(() => undefined);
     syncSessionRef.current?.broadcastFullState(next);
-  };
-
-  const handleExportPng = () => {
-    if (!activeNotebook || !activePage) return;
-    const width = 1000;
-    const height = activePage.pageHeight || 1600;
-    const tpl = activePage.paperTemplate;
-    const dark = isDarkPaperTemplate(tpl);
-
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.fillStyle = dark ? "#181B20" : tpl === "cream" ? "#FDF8EC" : "#FFFFFF";
-    ctx.fillRect(0, 0, width, height);
-
-    if (
-      tpl === "lined" ||
-      tpl === "cream" ||
-      tpl === "cornell" ||
-      tpl === "dark_lined"
-    ) {
-      ctx.strokeStyle = dark
-        ? "#2A303B"
-        : tpl === "cream"
-          ? "#EDE2C8"
-          : "#E2E8F0";
-      ctx.lineWidth = 1;
-      for (let y = 36; y < height; y += 36) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-        ctx.stroke();
-      }
-    } else if (tpl === "grid" || tpl === "dark_grid") {
-      ctx.strokeStyle = dark ? "#2A303B" : "#E5E7EB";
-      ctx.lineWidth = 1;
-      for (let x = 28; x < width; x += 28) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
-        ctx.stroke();
-      }
-      for (let y = 28; y < height; y += 28) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-        ctx.stroke();
-      }
-    }
-
-    const pageItems = activeNotebook.items
-      .filter(
-        (i) =>
-          !i.deleted &&
-          (i.pageId === activePage.id || (!i.pageId && activePageIndex === 0))
-      )
-      .sort((a, b) => a.zIndex - b.zIndex);
-
-    for (const item of pageItems) {
-      if (
-        item.type === "sticky" ||
-        item.type === "meeting_card" ||
-        item.type === "shape"
-      ) {
-        ctx.fillStyle = item.bgColor || "#FEF9C3";
-        ctx.strokeStyle = item.color || "#D6D3C9";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.roundRect(item.x, item.y, item.width, item.height, 14);
-        ctx.fill();
-        ctx.stroke();
-      }
-
-      if (item.type === "sticker") {
-        ctx.font = "48px sans-serif";
-        ctx.fillText(item.stickerEmoji || "⭐", item.x + 18, item.y + 56);
-      } else if (item.title || item.text) {
-        ctx.fillStyle =
-          item.type === "text" && dark ? "#F3F4F6" : item.color || "#1C1B18";
-        ctx.font = `600 ${item.fontSize || 15}px "IBM Plex Sans Thai", sans-serif`;
-        const textBlock = [item.title, item.text].filter(Boolean).join("\n");
-        const lines = textBlock.split("\n");
-        lines.slice(0, 14).forEach((ln, idx) => {
-          ctx.fillText(
-            ln.slice(0, 72),
-            item.x + 14,
-            item.y + 26 + idx * 22,
-            item.width - 28
-          );
-        });
-      }
-    }
-
-    const pageStrokes = activeNotebook.strokes.filter(
-      (st) =>
-        !st.deleted &&
-        (st.pageId === activePage.id || (!st.pageId && activePageIndex === 0))
-    );
-
-    for (const s of pageStrokes) {
-      const pathStr = strokePointsToSvgPath(s.points, {
-        size: s.size,
-        tool: s.tool,
-        isStylus: s.isStylus,
-      });
-      if (!pathStr) continue;
-      ctx.save();
-      ctx.globalAlpha = s.opacity;
-      ctx.fillStyle = s.color;
-      ctx.fill(new Path2D(pathStr));
-      ctx.restore();
-    }
-
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${sanitizeFileName(activeNotebook.title)}-p${activePageIndex + 1}.png`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }, "image/png");
   };
 
   const handleExportJson = async () => {
@@ -880,7 +981,7 @@ export function ShootNoteWorkspace({
   const activeSize = tool === "highlighter" ? highlightSize : penSize;
 
   return (
-    <div className="mx-auto flex w-full max-w-[1440px] flex-1">
+    <div className="mx-auto flex w-full max-w-[1440px] flex-1 min-h-0 overflow-hidden">
       <NotebookSidebar
         notebooks={notebooks}
         activeId={activeNotebookId}
@@ -892,7 +993,7 @@ export function ShootNoteWorkspace({
         onImportBackup={handleImportBackup}
       />
 
-      <main className="flex-1 min-w-0 flex flex-col bg-[#ECEAE2]">
+      <main className="flex-1 min-w-0 min-h-0 flex flex-col bg-[#ECEAE2] overflow-hidden">
         {!activeNotebook || !activePage ? (
           <div className="flex-1 flex items-center justify-center p-6">
             <div className="max-w-md w-full rounded-2xl border border-line bg-white p-6 text-center shadow-sm space-y-4">
@@ -901,7 +1002,7 @@ export function ShootNoteWorkspace({
               </h2>
               <p className="text-xs text-muted leading-relaxed">
                 เลือกสร้างสมุดจดยาวสไตล์ GoodNotes (รองรับ Apple Pencil บน iPad,
-                หลายหน้ากระดาษ, สติกเกอร์, แนบภาพ/คลิป) หรือเปิด ShortNote สำหรับจดด่วน
+                หลายหน้ากระดาษ, ตาราง, สติกเกอร์, แนบไฟล์/YouTube) หรือสร้างสไลด์ 16:9
               </p>
               <div className="flex flex-col sm:flex-row gap-2.5">
                 <button
@@ -909,22 +1010,29 @@ export function ShootNoteWorkspace({
                   onClick={() => handleCreateNotebook("notebook")}
                   className="flex-1 rounded-xl bg-accent px-4 py-2.5 text-xs font-semibold text-white hover:bg-accent-dark"
                 >
-                  + สมุดจดยาว (GoodNotes)
+                  + สมุดจดยาว
                 </button>
                 <button
                   type="button"
                   onClick={() => handleCreateNotebook("shortnote")}
                   className="flex-1 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
                 >
-                  ⚡ ShootNote สั้น
+                  ⚡ ShortNote
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCreateNotebook("slides")}
+                  className="flex-1 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-xs font-semibold text-indigo-900 hover:bg-indigo-100"
+                >
+                  สไลด์ 16:9
                 </button>
               </div>
             </div>
           </div>
         ) : (
           <>
-            {/* Notebook Title & Sync Status Strip */}
-            <div className="no-print border-b border-line bg-white px-3 py-2 sm:px-5 flex flex-wrap items-center justify-between gap-2">
+            {/* Notebook Title & Sync Status Strip (pinned) */}
+            <div className="no-print shrink-0 border-b border-line bg-white px-3 py-2 sm:px-5 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0 flex-1">
                 <PencilLine className="h-4 w-4 text-accent shrink-0" />
                 <input
@@ -936,12 +1044,17 @@ export function ShootNoteWorkspace({
                 />
               </div>
 
-              <div className="flex items-center gap-2 text-[11px] text-muted shrink-0">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted shrink-0">
+                {statusNotice && (
+                  <span className="inline-flex items-center rounded-full bg-sky-50 border border-sky-200 px-2.5 py-0.5 font-medium text-sky-800">
+                    {statusNotice}
+                  </span>
+                )}
                 {activeNotebook.roomId && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 font-medium text-emerald-700">
                     <Radio className="h-3 w-3 animate-pulse" />
                     {syncStatus === "connected"
-                      ? `Live (${peers.length + 1})`
+                      ? `${cloudActive ? "Cloud" : "Live"} (${peers.length + 1})`
                       : syncStatus === "local"
                         ? `ในเครื่อง (${peers.length + 1}) · กำลังเชื่อมเน็ต`
                         : syncStatus === "connecting"
@@ -951,7 +1064,7 @@ export function ShootNoteWorkspace({
                 )}
                 {palmRejection && (
                   <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-accent-soft border border-accent/25 px-2 py-0.5 font-medium text-accent-dark">
-                    ✏️ โหมด Apple Pencil · ใช้นิ้วเลื่อนหน้าได้
+                    ✏️ โหมด Apple Pencil · 2 นิ้วเลื่อน/ซูม
                   </span>
                 )}
                 <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
@@ -975,6 +1088,8 @@ export function ShootNoteWorkspace({
               color={activeColor}
               size={activeSize}
               palmRejection={palmRejection}
+              autoShape={autoShape}
+              calcOpen={calcOpen}
               paperTemplate={activePage.paperTemplate}
               canUndo={undoStack.length > 0}
               canRedo={redoStack.length > 0}
@@ -990,6 +1105,8 @@ export function ShootNoteWorkspace({
                 else setPenSize(s);
               }}
               onTogglePalmRejection={() => setPalmRejection((v) => !v)}
+              onToggleAutoShape={() => setAutoShape((v) => !v)}
+              onToggleCalc={() => setCalcOpen((v) => !v)}
               onChangeTemplate={(tpl: PaperTemplate) => {
                 updateActivePage({ paperTemplate: tpl }, true);
                 if (isDarkPaperTemplate(tpl) && penColor === "#1C1B18") {
@@ -1030,6 +1147,24 @@ export function ShootNoteWorkspace({
                   fontSize: 15,
                 })
               }
+              onInsertTable={(rows, cols) => {
+                const grid: string[][] = Array.from({ length: rows }, (_, ri) =>
+                  Array.from({ length: cols }, (_, ci) =>
+                    ri === 0 ? `หัวข้อ ${ci + 1}` : ""
+                  )
+                );
+                addCanvasItem({
+                  type: "table",
+                  x: 80,
+                  y:
+                    activeNotebook.kind === "shortnote" && activePageIndex === 0
+                      ? 230
+                      : 110,
+                  width: Math.min(860, cols * 160),
+                  height: rows * 52,
+                  tableData: { rows: grid, headerBg: "#0F766E" },
+                });
+              }}
               onInsertSticker={(emoji, label) =>
                 addCanvasItem({
                   type: "sticker",
@@ -1061,18 +1196,26 @@ export function ShootNoteWorkspace({
                   fontSize: 16,
                 })
               }
+              onOpenInsertLink={() => setLinkModalOpen(true)}
+              onOpenPresenter={() => setPresenterOpen(true)}
               onUploadImage={handleUploadImage}
               onUploadMedia={handleUploadMedia}
+              onUploadDocument={handleUploadDocument}
               onUndo={handleUndo}
               onRedo={handleRedo}
               onExportPng={handleExportPng}
+              onExportPdf={handleExportPdf}
+              onExportPptx={handleExportPptx}
               onExportJson={handleExportJson}
               onOpenShareModal={() => setShareModalOpen(true)}
             />
 
-            {/* Multi-Page Navigator Strip */}
-            <div className="no-print border-b border-line bg-paper px-3 py-1.5 sm:px-5 flex items-center justify-between gap-2 overflow-x-auto">
-              <div className="flex items-center gap-1.5 shrink-0">
+            {/* Multi-Page Navigator Strip (pinned) */}
+            <div
+              data-page-navigator="true"
+              className="no-print shrink-0 border-b border-line bg-paper px-3 py-1.5 sm:px-5 flex items-center justify-between gap-2"
+            >
+              <div className="flex items-center gap-1 shrink-0">
                 <button
                   type="button"
                   disabled={activePageIndex <= 0}
@@ -1087,7 +1230,8 @@ export function ShootNoteWorkspace({
                 </button>
 
                 <span className="font-mono text-[11px] font-semibold text-muted px-1 whitespace-nowrap">
-                  หน้า {activePageIndex + 1}/{activePages.length}
+                  {activePage.aspect === "slide16x9" ? "สไลด์" : "หน้า"}{" "}
+                  {activePageIndex + 1}/{activePages.length}
                 </span>
 
                 <button
@@ -1102,6 +1246,22 @@ export function ShootNoteWorkspace({
                 >
                   <ChevronRight className="h-3.5 w-3.5" />
                 </button>
+
+                {activePages.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleMoveActivePage(
+                        activePageIndex < activePages.length - 1 ? 1 : -1
+                      )
+                    }
+                    className="inline-flex h-7 items-center gap-1 rounded-lg border border-line bg-white px-2 text-[11px] font-medium text-ink hover:bg-paper"
+                    title="สลับลำดับหน้านี้"
+                  >
+                    <ArrowLeftRight className="h-3 w-3 text-accent" />
+                    <span className="hidden md:inline">สลับหน้า</span>
+                  </button>
+                )}
               </div>
 
               <div className="flex items-center gap-1.5 overflow-x-auto flex-1 py-0.5">
@@ -1121,7 +1281,7 @@ export function ShootNoteWorkspace({
                         onClick={() => setActivePageId(pg.id)}
                         className="px-2.5 py-1 whitespace-nowrap"
                       >
-                        หน้า {idx + 1}
+                        {pg.aspect === "slide16x9" ? "สไลด์" : "หน้า"} {idx + 1}
                       </button>
                       {activePages.length > 1 && (
                         <button
@@ -1146,14 +1306,56 @@ export function ShootNoteWorkspace({
                 })}
               </div>
 
-              <button
-                type="button"
-                onClick={handleAddPage}
-                className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:bg-accent-dark transition-colors shadow-sm"
-              >
-                <FilePlus2 className="h-3.5 w-3.5" />
-                <span>เพิ่มหน้ากระดาษ</span>
-              </button>
+              {activePage.aspect === "slide16x9" ||
+              activeNotebook.kind === "slides" ? (
+                <div className="relative shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setSlideLayoutMenuOpen((v) => !v)}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:bg-accent-dark transition-colors shadow-sm"
+                  >
+                    <FilePlus2 className="h-3.5 w-3.5" />
+                    <span>เพิ่มสไลด์</span>
+                  </button>
+                  {slideLayoutMenuOpen && (
+                    <div className="absolute right-0 mt-1.5 w-48 rounded-xl border border-line bg-white p-1.5 shadow-lg z-30 space-y-1">
+                      {(
+                        [
+                          ["content", "สไลด์หัวข้อ + เนื้อหา"],
+                          ["two_col", "สไลด์เปรียบเทียบ 2 คอลัมน์"],
+                          ["table_chart", "สไลด์ตาราง + สรุปผล"],
+                          ["cover", "สไลด์หน้าปก"],
+                        ] as Array<[SlideLayoutPreset, string]>
+                      ).map(([preset, label]) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => handleAddPage(preset)}
+                          className="block w-full rounded-lg px-3 py-1.5 text-left text-xs font-medium text-ink hover:bg-paper"
+                        >
+                          {label}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => handleAddPage()}
+                        className="block w-full rounded-lg px-3 py-1.5 text-left text-xs font-medium text-muted hover:bg-paper"
+                      >
+                        สไลด์หน้าว่าง
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => handleAddPage()}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:bg-accent-dark transition-colors shadow-sm"
+                >
+                  <FilePlus2 className="h-3.5 w-3.5" />
+                  <span>เพิ่มหน้ากระดาษ</span>
+                </button>
+              )}
             </div>
 
             <GoodNotesCanvas
@@ -1166,6 +1368,7 @@ export function ShootNoteWorkspace({
               color={activeColor}
               size={activeSize}
               palmRejection={palmRejection}
+              autoShape={autoShape}
               peers={peers}
               svgExportRef={svgRef}
               onAddStroke={handleAddStroke}
@@ -1179,7 +1382,11 @@ export function ShootNoteWorkspace({
                   true
                 )
               }
-              onAddPage={handleAddPage}
+              onAddPage={() =>
+                handleAddPage(
+                  activePage.aspect === "slide16x9" ? "content" : undefined
+                )
+              }
               onCursorMove={(x, y) =>
                 syncSessionRef.current?.broadcastCursor(x, y, tool)
               }
@@ -1193,6 +1400,10 @@ export function ShootNoteWorkspace({
         roomId={activeNotebook?.roomId}
         activeNotebookTitle={activeNotebook?.title}
         syncStatus={syncStatus}
+        cloudConfigured={hasCloudRooms}
+        cloudActive={cloudActive}
+        pinRequired={pinRequired}
+        roomPinProtected={activeNotebook?.roomPinProtected}
         peers={peers}
         displayName={collabName}
         onChangeDisplayName={(name) => {
@@ -1205,6 +1416,14 @@ export function ShootNoteWorkspace({
         onJoinRoom={handleJoinRoom}
         onLeaveRoom={handleLeaveRoom}
         onForceSync={() => syncSessionRef.current?.requestSync()}
+        onSubmitRoomPin={(pin) => {
+          setPinRequired(false);
+          syncSessionRef.current?.setRoomPin(pin);
+        }}
+        onSetCloudRoomPin={async (newPin) => {
+          if (!syncSessionRef.current) return false;
+          return syncSessionRef.current.updateCloudRoomPin(newPin);
+        }}
         onClose={() => setShareModalOpen(false)}
       />
 
@@ -1215,6 +1434,82 @@ export function ShootNoteWorkspace({
         onConfirm={handleConfirmPendingJoin}
         onCancel={handleCancelPendingJoin}
       />
+
+      <InsertLinkModal
+        isOpen={linkModalOpen}
+        onInsertYouTube={({ videoId, startSeconds, title, url }) =>
+          addCanvasItem({
+            type: "youtube",
+            x: 80,
+            y:
+              activeNotebook?.kind === "shortnote" && activePageIndex === 0
+                ? 230
+                : 110,
+            width: 480,
+            height: 310,
+            title,
+            linkUrl: url,
+            youtubeId: videoId,
+            youtubeStart: startSeconds,
+          })
+        }
+        onInsertLink={({
+          url,
+          title,
+          provider,
+        }: {
+          url: string;
+          title: string;
+          provider: LinkProvider;
+        }) =>
+          addCanvasItem({
+            type: "link",
+            x: 80,
+            y:
+              activeNotebook?.kind === "shortnote" && activePageIndex === 0
+                ? 230
+                : 110,
+            width: 340,
+            height: 118,
+            title,
+            linkUrl: url,
+            linkProvider: provider,
+          })
+        }
+        onClose={() => setLinkModalOpen(false)}
+      />
+
+      <MathCalculatorPanel
+        isOpen={calcOpen}
+        apiKey={apiKey}
+        passcode={passcode}
+        onOpenApiModal={onOpenApiModal}
+        onInsertResult={(text) => {
+          addCanvasItem({
+            type: "text",
+            x: 90,
+            y:
+              activeNotebook?.kind === "shortnote" && activePageIndex === 0
+                ? 230
+                : 120,
+            width: 360,
+            height: 92,
+            text,
+            color: "#0F766E",
+            fontSize: 20,
+          });
+        }}
+        onClose={() => setCalcOpen(false)}
+      />
+
+      {activeNotebook && (
+        <SlidePresenterModal
+          isOpen={presenterOpen}
+          notebook={activeNotebook}
+          initialPageIndex={activePageIndex}
+          onClose={() => setPresenterOpen(false)}
+        />
+      )}
     </div>
   );
 }

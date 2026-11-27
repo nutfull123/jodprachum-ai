@@ -1,13 +1,14 @@
 import { getStroke } from "perfect-freehand";
 import type { SavedMeeting } from "../types/meeting";
-import type {
-  CanvasItem,
-  InkStroke,
-  NotebookPage,
-  PaperTemplate,
-  ShootNotebook,
-  StrokePoint,
-} from "../types/notebook";
+import {
+  SLIDE_HEIGHT,
+  type CanvasItem,
+  type InkStroke,
+  type NotebookPage,
+  type PaperTemplate,
+  type ShootNotebook,
+  type StrokePoint,
+} from "../types/notebook.ts";
 
 const ROOM_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -23,7 +24,8 @@ export function createNotebookPage(
   order: number,
   paperTemplate: PaperTemplate = "lined",
   pageHeight: number = 1600,
-  id?: string
+  id?: string,
+  aspect: "portrait" | "slide16x9" = "portrait"
 ): NotebookPage {
   const now = Date.now();
   return {
@@ -33,7 +35,8 @@ export function createNotebookPage(
         ? `page-${crypto.randomUUID().slice(0, 8)}`
         : `page-${now}-${order}`),
     paperTemplate,
-    pageHeight,
+    pageHeight: aspect === "slide16x9" ? SLIDE_HEIGHT : pageHeight,
+    aspect,
     order,
     updatedAt: now,
   };
@@ -63,6 +66,7 @@ export function ensureNotebookPages(nb: ShootNotebook): NotebookPage[] {
       id: "page-1",
       paperTemplate: nb.paperTemplate || "lined",
       pageHeight: nb.pageHeight || 1600,
+      aspect: nb.kind === "slides" ? "slide16x9" : "portrait",
       order: 0,
       updatedAt: nb.metaUpdatedAt || nb.createdAt || 0,
     },
@@ -96,6 +100,7 @@ export function createGuestRoomNotebook(roomId: string): ShootNotebook {
         id: "page-1",
         paperTemplate: "lined",
         pageHeight: 1600,
+        aspect: "portrait",
         order: 0,
         updatedAt: 0,
       },
@@ -109,13 +114,209 @@ export function createGuestRoomNotebook(roomId: string): ShootNotebook {
   };
 }
 
+export type SlideLayoutPreset = "cover" | "content" | "two_col" | "table_chart";
+
+export function createSlideLayoutItems(
+  layout: SlideLayoutPreset,
+  pageId: string
+): CanvasItem[] {
+  const now = Date.now();
+  const makeId = (suffix: string) =>
+    `sl-${suffix}-${now}-${Math.floor(Math.random() * 1000)}`;
+
+  if (layout === "cover") {
+    return [
+      {
+        id: makeId("banner"),
+        pageId,
+        type: "shape",
+        shapeKind: "banner",
+        x: 90,
+        y: 165,
+        width: 1100,
+        height: 150,
+        zIndex: 1,
+        text: "หัวข้องานนำเสนอ / งานวิจัย",
+        bgColor: "#EFFAF8",
+        color: "#0F766E",
+        fontSize: 34,
+        updatedAt: now,
+      },
+      {
+        id: makeId("sub"),
+        pageId,
+        type: "text",
+        x: 90,
+        y: 350,
+        width: 1100,
+        height: 140,
+        zIndex: 2,
+        text: "สรุปประเด็นสำคัญ · คณะผู้จัดทำ / ทีมวิจัย\nวันที่นำเสนอ...",
+        color: "#1C1B18",
+        fontSize: 22,
+        updatedAt: now,
+      },
+    ];
+  }
+
+  if (layout === "two_col") {
+    return [
+      {
+        id: makeId("head"),
+        pageId,
+        type: "shape",
+        shapeKind: "banner",
+        x: 64,
+        y: 44,
+        width: 1152,
+        height: 76,
+        zIndex: 1,
+        text: "เปรียบเทียบประเด็นสำคัญ (2 คอลัมน์)",
+        bgColor: "#EFFAF8",
+        color: "#0F766E",
+        fontSize: 24,
+        updatedAt: now,
+      },
+      {
+        id: makeId("left"),
+        pageId,
+        type: "meeting_card",
+        x: 64,
+        y: 150,
+        width: 556,
+        height: 500,
+        zIndex: 2,
+        title: "📌 ประเด็น / วิธีที่ 1",
+        text: "• ระบุข้อมูลหรือผลวิเคราะห์...\n• ตัวอย่างประกอบ...",
+        bgColor: "#FFFFFF",
+        color: "#1C1B18",
+        fontSize: 18,
+        updatedAt: now,
+      },
+      {
+        id: makeId("right"),
+        pageId,
+        type: "meeting_card",
+        x: 660,
+        y: 150,
+        width: 556,
+        height: 500,
+        zIndex: 3,
+        title: "💡 ประเด็น / วิธีที่ 2",
+        text: "• สรุปข้อดี ข้อสังเกต...\n• ข้อเสนอแนะ...",
+        bgColor: "#FEF9C3",
+        color: "#1C1B18",
+        fontSize: 18,
+        updatedAt: now,
+      },
+    ];
+  }
+
+  if (layout === "table_chart") {
+    return [
+      {
+        id: makeId("head"),
+        pageId,
+        type: "shape",
+        shapeKind: "banner",
+        x: 64,
+        y: 44,
+        width: 1152,
+        height: 74,
+        zIndex: 1,
+        text: "สรุปผลข้อมูลและตารางเปรียบเทียบ",
+        bgColor: "#EFFAF8",
+        color: "#0F766E",
+        fontSize: 24,
+        updatedAt: now,
+      },
+      {
+        id: makeId("tbl"),
+        pageId,
+        type: "table",
+        x: 64,
+        y: 148,
+        width: 760,
+        height: 440,
+        zIndex: 2,
+        tableData: {
+          headerBg: "#0F766E",
+          rows: [
+            ["ตัวแปร / เกณฑ์", "กลุ่มทดลอง", "กลุ่มควบคุม", "หมายเหตุ"],
+            ["รายการที่ 1", "", "", ""],
+            ["รายการที่ 2", "", "", ""],
+            ["สรุปภาพรวม", "", "", ""],
+          ],
+        },
+        updatedAt: now,
+      },
+      {
+        id: makeId("note"),
+        pageId,
+        type: "sticky",
+        x: 854,
+        y: 148,
+        width: 360,
+        height: 440,
+        zIndex: 3,
+        title: "📝 ข้อค้นพบสำคัญ",
+        text: "สรุปแนวโน้มจากตาราง หรือใช้ปากกาวง/ชี้ไฮไลต์เพิ่มเติมได้เลย",
+        bgColor: "#FEF9C3",
+        color: "#1C1B18",
+        fontSize: 16,
+        updatedAt: now,
+      },
+    ];
+  }
+
+  // Default: "content"
+  return [
+    {
+      id: makeId("head"),
+      pageId,
+      type: "shape",
+      shapeKind: "banner",
+      x: 64,
+      y: 44,
+      width: 1152,
+      height: 76,
+      zIndex: 1,
+      text: "หัวข้อสไลด์",
+      bgColor: "#EFFAF8",
+      color: "#0F766E",
+      fontSize: 26,
+      updatedAt: now,
+    },
+    {
+      id: makeId("body"),
+      pageId,
+      type: "meeting_card",
+      x: 64,
+      y: 148,
+      width: 1152,
+      height: 502,
+      zIndex: 2,
+      title: "สาระสำคัญ",
+      text: "• พิมพ์เนื้อหา หรือวางรูปภาพ ตาราง และคลิป YouTube ได้ทันที",
+      bgColor: "#FFFFFF",
+      color: "#1C1B18",
+      fontSize: 18,
+      updatedAt: now,
+    },
+  ];
+}
+
 export function createEmptyNotebook(
-  kind: "notebook" | "shortnote" = "notebook",
+  kind: "notebook" | "shortnote" | "slides" = "notebook",
   title?: string
 ): ShootNotebook {
   const now = Date.now();
-  const paperTemplate: PaperTemplate = kind === "shortnote" ? "dotted" : "lined";
-  const pageHeight = kind === "shortnote" ? 1100 : 1600;
+  const paperTemplate: PaperTemplate =
+    kind === "shortnote" ? "dotted" : kind === "slides" ? "blank" : "lined";
+  const pageHeight =
+    kind === "slides" ? SLIDE_HEIGHT : kind === "shortnote" ? 1100 : 1600;
+  const pageAspect = kind === "slides" ? "slide16x9" : "portrait";
+
   return {
     id:
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -124,13 +325,19 @@ export function createEmptyNotebook(
     kind,
     title:
       title?.trim() ||
-      (kind === "shortnote" ? "ShootNote ด่วน" : "สมุดจดใหม่"),
+      (kind === "slides"
+        ? "ชุดสไลด์ใหม่"
+        : kind === "shortnote"
+          ? "ShootNote ด่วน"
+          : "สมุดจดใหม่"),
     quickBody: kind === "shortnote" ? "" : undefined,
     paperTemplate,
     pageHeight,
-    pages: [createNotebookPage(0, paperTemplate, pageHeight, "page-1")],
+    pages: [
+      createNotebookPage(0, paperTemplate, pageHeight, "page-1", pageAspect),
+    ],
     strokes: [],
-    items: [],
+    items: kind === "slides" ? createSlideLayoutItems("cover", "page-1") : [],
     metaUpdatedAt: now,
     createdAt: now,
     updatedAt: now,
@@ -203,6 +410,7 @@ export function mergeNotebook(
     strokes: mergeByIdLWW<InkStroke>(local.strokes || [], remote.strokes || []),
     items: mergeByIdLWW<CanvasItem>(local.items || [], remote.items || []),
     roomId: local.roomId || remote.roomId,
+    roomPinProtected: Boolean(local.roomPinProtected || remote.roomPinProtected),
     metaUpdatedAt: Math.max(local.metaUpdatedAt || 0, remote.metaUpdatedAt || 0),
     createdAt,
     updatedAt: Math.max(local.updatedAt || 0, remote.updatedAt || 0),
@@ -267,15 +475,17 @@ const TOPIC_CARD_BG = [
   "#F4F6F8",
 ] as const;
 
-export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook {
+export function createMeetingPageItems(
+  meeting: SavedMeeting,
+  pageId: string,
+  baseZIndex: number = 1
+): { items: CanvasItem[]; pageHeight: number } {
   const now = Date.now();
   const { analysis } = meeting;
-  const page1Id = "page-1";
   const items: CanvasItem[] = [];
   let cursorY = 56;
-  let z = 1;
+  let z = baseZIndex;
 
-  // Header executive summary card
   const execText = [
     analysis.executiveSummary,
     analysis.participants.length > 0
@@ -290,8 +500,8 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
 
   const execHeight = Math.max(190, Math.min(340, 120 + execText.length * 0.42));
   items.push({
-    id: `mc-exec-${now}`,
-    pageId: page1Id,
+    id: `mc-exec-${now}-${Math.floor(Math.random() * 1000)}`,
+    pageId,
     type: "meeting_card",
     x: 48,
     y: cursorY,
@@ -307,7 +517,6 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
   });
   cursorY += Math.round(execHeight) + 28;
 
-  // Topic cards arranged cleanly in 2 columns
   const colWidth = 438;
   const gap = 28;
   let leftY = cursorY;
@@ -337,8 +546,8 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
     const body = lines.join("\n");
     const cardHeight = Math.max(210, Math.min(420, 110 + body.length * 0.55));
     items.push({
-      id: `mc-topic-${idx}-${now}`,
-      pageId: page1Id,
+      id: `mc-topic-${idx}-${now}-${Math.floor(Math.random() * 1000)}`,
+      pageId,
       type: "meeting_card",
       x,
       y,
@@ -362,7 +571,6 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
 
   cursorY = Math.max(leftY, rightY) + 12;
 
-  // Action items sticky note
   if (analysis.tasks.length > 0) {
     const taskLines = analysis.tasks.map((t, idx) => {
       const mark = t.status === "done" ? "☑" : "☐";
@@ -373,8 +581,8 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
     const taskHeight = Math.max(190, 90 + analysis.tasks.length * 32);
 
     items.push({
-      id: `mc-tasks-${now}`,
-      pageId: page1Id,
+      id: `mc-tasks-${now}-${Math.floor(Math.random() * 1000)}`,
+      pageId,
       type: "sticky",
       x: 48,
       y: cursorY,
@@ -391,7 +599,16 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
     cursorY += Math.round(taskHeight) + 120;
   }
 
-  const page1Height = Math.max(1600, cursorY + 300);
+  return {
+    items,
+    pageHeight: Math.max(1600, cursorY + 300),
+  };
+}
+
+export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook {
+  const now = Date.now();
+  const page1Id = "page-1";
+  const built = createMeetingPageItems(meeting, page1Id, 1);
 
   return {
     id:
@@ -399,15 +616,15 @@ export function createNotebookFromMeeting(meeting: SavedMeeting): ShootNotebook 
         ? crypto.randomUUID()
         : `nb-meeting-${now}`,
     kind: "notebook",
-    title: analysis.meetingTitle,
+    title: meeting.analysis.meetingTitle,
     paperTemplate: "lined",
-    pageHeight: page1Height,
+    pageHeight: built.pageHeight,
     pages: [
-      createNotebookPage(0, "lined", page1Height, page1Id),
+      createNotebookPage(0, "lined", built.pageHeight, page1Id),
       createNotebookPage(1, "lined", 1600, "page-2"),
     ],
     strokes: [],
-    items,
+    items: built.items,
     metaUpdatedAt: now,
     createdAt: now,
     updatedAt: now,

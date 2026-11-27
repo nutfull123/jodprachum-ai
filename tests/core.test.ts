@@ -18,13 +18,21 @@ import {
 import { hitTestStroke } from "../src/lib/media-utils.ts";
 import {
   attachNotebookToRoom,
+  createEmptyNotebook,
   createGuestRoomNotebook,
+  createMeetingPageItems,
   createNotebookFromMeeting,
   createNotebookPage,
   ensureNotebookPages,
   mergeNotebook,
   strokePointsToSvgPath,
 } from "../src/lib/notebook-crdt.ts";
+import { recognizeHeldShape } from "../src/lib/shape-recognizer.ts";
+import { evaluateScientificMath } from "../src/lib/math-engine.ts";
+import {
+  detectLinkProvider,
+  parseYouTubeUrl,
+} from "../src/lib/link-utils.ts";
 import {
   decodeMqttPackets,
   decodeRemainingLength,
@@ -859,4 +867,145 @@ test("attachNotebookToRoom and mergeNotebook converge deterministically after of
   assert.equal(mergedOnFriend.strokes.length, 2);
   assert.equal(mergedOnHost.items.length, 2);
   assert.equal(mergedOnFriend.items.length, 2);
+});
+
+test("recognizeHeldShape snaps hand-drawn straight lines, arrows, circles, rectangles, and triangles", () => {
+  // Horizontal-ish line (2 deg drift -> snaps flat horizontal)
+  const linePts = Array.from({ length: 12 }, (_, i) => [
+    50 + i * 20,
+    100 + (i % 2 === 0 ? 1.5 : -1.5),
+    0.5,
+  ]) as Array<[number, number, number]>;
+  const line = recognizeHeldShape(linePts);
+  assert.equal(line?.kind, "line");
+  assert.ok(line && Math.abs(line.points[0][1] - line.points[line.points.length - 1][1]) < 0.01);
+
+  // Circle
+  const circlePts = Array.from({ length: 24 }, (_, i) => {
+    const a = (i / 24) * Math.PI * 2;
+    return [200 + 50 * Math.cos(a), 200 + 50 * Math.sin(a), 0.5] as [
+      number,
+      number,
+      number,
+    ];
+  });
+  circlePts.push([circlePts[0][0], circlePts[0][1], 0.5]);
+  assert.equal(recognizeHeldShape(circlePts)?.kind, "circle");
+
+  // Rectangle
+  const rectPts: Array<[number, number, number]> = [
+    [100, 100, 0.5],
+    [200, 100, 0.5],
+    [300, 100, 0.5],
+    [300, 175, 0.5],
+    [300, 250, 0.5],
+    [200, 250, 0.5],
+    [100, 250, 0.5],
+    [100, 175, 0.5],
+    [100, 105, 0.5],
+  ];
+  assert.equal(recognizeHeldShape(rectPts)?.kind, "rect");
+
+  // Triangle
+  const triPts: Array<[number, number, number]> = [
+    [200, 80, 0.5],
+    [245, 160, 0.5],
+    [290, 240, 0.5],
+    [200, 240, 0.5],
+    [110, 240, 0.5],
+    [155, 160, 0.5],
+    [180, 120, 0.5],
+    [200, 84, 0.5],
+  ];
+  assert.equal(recognizeHeldShape(triPts)?.kind, "triangle");
+
+  // Arrow (shaft + hook)
+  const arrowPts: Array<[number, number, number]> = [
+    [50, 150, 0.5],
+    [110, 150, 0.5],
+    [170, 150, 0.5],
+    [230, 150, 0.5],
+    [290, 150, 0.5],
+    [265, 130, 0.5],
+    [290, 150, 0.5],
+    [265, 170, 0.5],
+  ];
+  assert.equal(recognizeHeldShape(arrowPts)?.kind, "arrow");
+});
+
+test("evaluateScientificMath handles trig (DEG/RAD), log/ln, factorial, implicit mult, and linear equations", () => {
+  const degRes = evaluateScientificMath("sin(30) + sqrt(16)", { angleMode: "deg" });
+  assert.equal(degRes.ok, true);
+  if (degRes.ok) assert.equal(degRes.formatted, "4.5");
+
+  const radRes = evaluateScientificMath("cos(pi) + ln(e^2) + log(100)", { angleMode: "rad" });
+  assert.equal(radRes.ok, true);
+  if (radRes.ok) assert.equal(radRes.formatted, "3");
+
+  const factRes = evaluateScientificMath("5! / (2 * 3) + 2pi");
+  assert.equal(factRes.ok, true);
+  if (factRes.ok) assert.ok(Math.abs(factRes.value - (20 + 2 * Math.PI)) < 1e-6);
+
+  const linearRes = evaluateScientificMath("2x + 5 = 19");
+  assert.equal(linearRes.ok, true);
+  if (linearRes.ok) {
+    assert.equal(linearRes.solvedVariable, "x");
+    assert.equal(linearRes.formatted, "7");
+  }
+
+  const badRes = evaluateScientificMath("10 / 0");
+  assert.equal(badRes.ok, false);
+});
+
+test("parseYouTubeUrl and detectLinkProvider parse video IDs, timestamps, and research providers", () => {
+  assert.deepEqual(parseYouTubeUrl("https://youtu.be/dQw4w9WgXcQ?t=1m30s"), {
+    videoId: "dQw4w9WgXcQ",
+    startSeconds: 90,
+  });
+  assert.deepEqual(parseYouTubeUrl("https://www.youtube.com/watch?v=abc123XYZ_0&start=42"), {
+    videoId: "abc123XYZ_0",
+    startSeconds: 42,
+  });
+  assert.deepEqual(parseYouTubeUrl("https://youtube.com/shorts/short999AA"), {
+    videoId: "short999AA",
+    startSeconds: 0,
+  });
+  assert.equal(parseYouTubeUrl("https://drive.google.com/file/d/123/view"), null);
+
+  assert.equal(detectLinkProvider("https://drive.google.com/drive/folders/123"), "gdrive");
+  assert.equal(detectLinkProvider("https://1drv.ms/b/s!xyz"), "onedrive");
+  assert.equal(detectLinkProvider("https://arxiv.org/pdf/2501.00001.pdf"), "pdf");
+});
+
+test("createEmptyNotebook('slides') creates 16:9 slide deck and createMeetingPageItems appends cleanly", () => {
+  const deck = createEmptyNotebook("slides", "พรีเซนต์งานวิจัย");
+  assert.equal(deck.kind, "slides");
+  const pages = ensureNotebookPages(deck);
+  assert.equal(pages.length, 1);
+  assert.equal(pages[0].aspect, "slide16x9");
+  assert.equal(pages[0].pageHeight, 720);
+  assert.ok(deck.items.length >= 2);
+
+  const sampleMeeting = {
+    id: "m-append",
+    createdAt: 1000,
+    updatedAt: 1000,
+    sourceType: "demo" as const,
+    fileName: "interview.m4a",
+    hasLocalAudio: false,
+    analysis: {
+      meetingTitle: "สัมภาษณ์กลุ่มตัวอย่าง",
+      executiveSummary: "พบแนวโน้มการใช้งานเพิ่มขึ้น",
+      participants: ["พลอย"],
+      keyDecisions: ["เก็บข้อมูลเพิ่ม 20 ชุด"],
+      blockers: [],
+      topics: [],
+      tasks: [],
+      transcript: [],
+      mindMap: { id: "root", label: "สัมภาษณ์", nodeType: "root" as const, children: [] },
+    },
+  };
+  const appended = createMeetingPageItems(sampleMeeting, "page-ai-2", 10);
+  assert.ok(appended.items.length >= 1);
+  assert.ok(appended.items.every((it) => it.pageId === "page-ai-2"));
 });
