@@ -15,7 +15,11 @@ import type {
   MeetingTask,
   SavedMeeting,
 } from "../types/meeting";
-import type { NotebookFolder, ShootNotebook } from "../types/notebook";
+import type {
+  CustomPaperTemplate,
+  NotebookFolder,
+  ShootNotebook,
+} from "../types/notebook";
 import { uploadAndAnalyzeAudio, type AnalyzeProgress } from "../lib/analyze-client";
 import {
   moveNotebookToFolder,
@@ -33,6 +37,7 @@ import {
 import { createSampleMeeting } from "../lib/sample-meeting";
 import {
   clearAllMeetings,
+  deleteCustomTemplate,
   deleteFolder,
   deleteMeeting,
   deleteNotebook,
@@ -40,9 +45,11 @@ import {
   getStoredApiKey,
   getStoredPasscode,
   getStoredTheme,
+  listCustomTemplates,
   listFolders,
   listMeetings,
   listNotebooks,
+  saveCustomTemplate,
   saveFolder,
   saveMeeting,
   saveNotebook,
@@ -155,9 +162,12 @@ export default function HomePage() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [sidebarMobileOpen, setSidebarMobileOpen] = useState(false);
 
-  // ShootNote notebooks & folders state
+  // ShootNote notebooks, folders & custom paper templates state
   const [notebooks, setNotebooks] = useState<ShootNotebook[]>([]);
   const [folders, setFolders] = useState<NotebookFolder[]>([]);
+  const [customTemplates, setCustomTemplates] = useState<CustomPaperTemplate[]>(
+    []
+  );
   const [activeNotebookId, setActiveNotebookId] = useState<string | null>(null);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [notebookView, setNotebookView] = useState<"home" | "editor">("home");
@@ -217,9 +227,15 @@ export default function HomePage() {
       const data = (await res.json()) as AppVersionPayload;
       if (!data?.buildId) return;
 
-      if (CLIENT_BUILD_ID !== "dev" && data.buildId !== CLIENT_BUILD_ID) {
+      const buildChanged =
+        CLIENT_BUILD_ID !== "dev" && data.buildId !== CLIENT_BUILD_ID;
+      const versionChanged =
+        Boolean(data.version) && data.version !== APP_RELEASE_VERSION;
+
+      if (buildChanged || versionChanged) {
+        const targetId = data.buildId || data.version;
         setAvailableUpdate({
-          buildId: data.buildId,
+          buildId: targetId,
           version: data.version || APP_RELEASE_VERSION,
           builtAt: data.builtAt || "",
           highlights:
@@ -227,13 +243,18 @@ export default function HomePage() {
               ? data.highlights
               : APP_UPDATE_HIGHLIGHTS,
         });
+        const isSnoozed =
+          snoozedRef.current.buildId === targetId &&
+          Date.now() < snoozedRef.current.until;
         if (
-          shouldPromptAppUpdate({
-            clientBuildId: CLIENT_BUILD_ID,
-            serverBuildId: data.buildId,
-            snoozedBuildId: snoozedRef.current.buildId,
-            snoozedUntil: snoozedRef.current.until,
-          })
+          !isSnoozed &&
+          (versionChanged ||
+            shouldPromptAppUpdate({
+              clientBuildId: CLIENT_BUILD_ID,
+              serverBuildId: targetId,
+              snoozedBuildId: snoozedRef.current.buildId,
+              snoozedUntil: snoozedRef.current.until,
+            }))
         ) {
           setUpdateDialogOpen(true);
         }
@@ -254,6 +275,7 @@ export default function HomePage() {
         const keys = await window.caches.keys();
         await Promise.all(keys.map((k) => window.caches.delete(k)));
       }
+      await new Promise((resolve) => setTimeout(resolve, 150));
     } catch {
       // Ignore cache cleanup errors and reload anyway
     }
@@ -293,6 +315,14 @@ export default function HomePage() {
       })
       .catch(() => {
         setFolders([]);
+      });
+
+    listCustomTemplates()
+      .then((tplRows) => {
+        setCustomTemplates(tplRows);
+      })
+      .catch(() => {
+        setCustomTemplates([]);
       });
 
     listNotebooks()
@@ -534,6 +564,22 @@ export default function HomePage() {
     },
     []
   );
+
+  const handleSaveCustomTemplate = useCallback((tpl: CustomPaperTemplate) => {
+    setCustomTemplates((prev) => {
+      const idx = prev.findIndex((t) => t.id === tpl.id);
+      if (idx === -1) return [tpl, ...prev];
+      const next = [...prev];
+      next[idx] = tpl;
+      return next;
+    });
+    saveCustomTemplate(tpl).catch(() => undefined);
+  }, []);
+
+  const handleDeleteCustomTemplate = useCallback((id: string) => {
+    setCustomTemplates((prev) => prev.filter((t) => t.id !== id));
+    deleteCustomTemplate(id).catch(() => undefined);
+  }, []);
 
   const handleUpsertNotebook = useCallback((nb: ShootNotebook) => {
     setNotebooks((prev) => {
@@ -819,6 +865,7 @@ export default function HomePage() {
         <ShootNoteWorkspace
           notebooks={notebooks}
           folders={folders}
+          customTemplates={customTemplates}
           activeNotebookId={activeNotebookId}
           currentFolderId={currentFolderId}
           notebookView={notebookView}
@@ -849,6 +896,8 @@ export default function HomePage() {
           onSaveFolder={handleSaveFolder}
           onDeleteFolder={handleDeleteFolder}
           onMoveNotebook={handleMoveNotebook}
+          onSaveCustomTemplate={handleSaveCustomTemplate}
+          onDeleteCustomTemplate={handleDeleteCustomTemplate}
         />
       ) : (
         <div className="mx-auto flex w-full max-w-[1440px] flex-1">

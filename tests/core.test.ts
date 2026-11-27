@@ -53,8 +53,22 @@ import {
   moveNotebookToFolder,
   removeFolderAndUnfileNotebooks,
 } from "../src/lib/folder-utils.ts";
+import {
+  applyPartialEraseAlongSegment,
+  eraseStrokePartially,
+} from "../src/lib/eraser-utils.ts";
+import {
+  getDimensionsForPaperSize,
+  resolvePageDimensions,
+} from "../src/lib/paper-utils.ts";
+import { getShapeSvgPath } from "../src/lib/shape-svg.ts";
 import type { SavedMeeting } from "../src/types/meeting.ts";
-import type { NotebookFolder, ShootNotebook } from "../src/types/notebook.ts";
+import {
+  SHAPE_CATALOG,
+  type InkStroke,
+  type NotebookFolder,
+  type ShootNotebook,
+} from "../src/types/notebook.ts";
 
 test("normalizeAudioMimeType strips codecs and normalizes browser/device audio formats", () => {
   assert.equal(
@@ -1078,4 +1092,164 @@ test("folder helpers create folders, move notebooks, compute breadcrumbs/counts,
   const merged = mergeNotebook(localWithFolder, remoteWithoutFolder);
   assert.equal(merged.title, "ชื่อจากเพื่อน");
   assert.equal(merged.folderId, otherFolder.id);
+});
+
+test("paper size and orientation helpers resolve portrait, landscape, and legacy slide pages accurately", () => {
+  const a4Portrait = getDimensionsForPaperSize("a4", "portrait");
+  assert.deepEqual(a4Portrait, { width: 1000, height: 1414 });
+
+  const a4Landscape = getDimensionsForPaperSize("a4", "landscape");
+  assert.deepEqual(a4Landscape, { width: 1414, height: 1000 });
+
+  const a3Portrait = getDimensionsForPaperSize("a3", "portrait");
+  assert.deepEqual(a3Portrait, { width: 1414, height: 2000 });
+
+  const slideResolved = resolvePageDimensions({
+    id: "pg-slide",
+    paperTemplate: "blank",
+    pageHeight: 720,
+    aspect: "slide16x9",
+    order: 0,
+    updatedAt: 1,
+  });
+  assert.equal(slideResolved.width, 1280);
+  assert.equal(slideResolved.height, 720);
+  assert.equal(slideResolved.orientation, "landscape");
+
+  const customPdfPage = resolvePageDimensions({
+    id: "pg-pdf",
+    paperTemplate: "blank",
+    paperSize: "pdf_custom",
+    orientation: "landscape",
+    pageWidth: 1480,
+    pageHeight: 1046,
+    order: 0,
+    updatedAt: 1,
+  });
+  assert.equal(customPdfPage.width, 1480);
+  assert.equal(customPdfPage.height, 1046);
+  assert.equal(customPdfPage.orientation, "landscape");
+});
+
+test("partial eraser densifies straight lines, splits cleanly in the middle, and respects page boundaries", () => {
+  const straightLine: InkStroke = {
+    id: "line-1",
+    pageId: "page-1",
+    tool: "pen",
+    color: "#1C1B18",
+    size: 6,
+    opacity: 1,
+    isStylus: true,
+    points: [
+      [0, 100, 0.5],
+      [200, 100, 0.5],
+    ],
+    updatedAt: 100,
+  };
+
+  // Erase a circle of radius 20 right at the midpoint (100, 100)
+  const split = eraseStrokePartially(straightLine, 100, 100, 20, 500);
+  assert.equal(split.changed, true);
+  assert.equal(split.tombstone?.deleted, true);
+  assert.equal(split.tombstone?.id, "line-1");
+  assert.equal(split.fragments.length, 2);
+  assert.ok(split.fragments[0].points[split.fragments[0].points.length - 1][0] < 85);
+  assert.ok(split.fragments[1].points[0][0] > 115);
+
+  // Diagonal drag erase across segment
+  const otherPageStroke: InkStroke = {
+    ...straightLine,
+    id: "line-p2",
+    pageId: "page-2",
+  };
+  const dragRes = applyPartialEraseAlongSegment(
+    [straightLine, otherPageStroke],
+    "page-1",
+    true,
+    100,
+    70,
+    100,
+    130,
+    18,
+    900
+  );
+  assert.equal(dragRes.anyChanged, true);
+  assert.equal(dragRes.erasedTombstones.length, 1);
+  assert.equal(dragRes.addedFragments.length, 2);
+  // Page 2 stroke remains untouched
+  assert.equal(
+    dragRes.strokes.find((s) => s.id === "line-p2")?.deleted,
+    undefined
+  );
+});
+
+test("getShapeSvgPath produces valid closed SVG paths for all 16 SHAPE_CATALOG kinds", () => {
+  assert.equal(SHAPE_CATALOG.length, 16);
+  for (const spec of SHAPE_CATALOG) {
+    const d = getShapeSvgPath(spec.kind, spec.defaultWidth, spec.defaultHeight);
+    assert.ok(d.startsWith("M "), `Shape ${spec.kind} path must start with M`);
+    assert.ok(d.endsWith(" Z"), `Shape ${spec.kind} path must end with Z`);
+    assert.equal(d.includes("NaN"), false, `Shape ${spec.kind} must not contain NaN`);
+  }
+});
+
+test("evaluateScientificMath solves 2-variable equations (5x+3=y), substitutions, quadratics, 2-equation systems, and trailing =", () => {
+  // Trailing "="
+  const trailing = evaluateScientificMath("5 * 3 + 2 =");
+  assert.equal(trailing.ok, true);
+  if (trailing.ok) {
+    assert.equal(trailing.value, 17);
+  }
+
+  // 2-variable linear equation: 5x + 3 = y
+  const twoVar = evaluateScientificMath("5x+3=y");
+  assert.equal(twoVar.ok, true);
+  if (twoVar.ok) {
+    assert.equal(twoVar.kind, "linear2var");
+    assert.equal(twoVar.formatted, "y = 5x + 3");
+    assert.deepEqual(twoVar.variables, ["x", "y"]);
+    assert.ok(twoVar.summaryLines?.includes("x = (y - 3) / 5"));
+    assert.ok(twoVar.summaryLines?.some((l) => l.includes("x = 0 ⇒ y = 3")));
+    assert.ok(twoVar.summaryLines?.some((l) => l.includes("y = 0 ⇒ x = -0.6")));
+    assert.equal(twoVar.sampleTable?.length, 5);
+    assert.equal(twoVar.sampleTable?.[1].outputs.y, "3");
+    assert.equal(twoVar.sampleTable?.[3].outputs.y, "13");
+  }
+
+  // Variable substitution on 5x + 3 = y
+  const subX = evaluateScientificMath("5x+3=y", { substitutions: { x: 2 } });
+  assert.equal(subX.ok, true);
+  if (subX.ok) {
+    assert.equal(subX.solvedVariable, "y");
+    assert.equal(subX.value, 13);
+  }
+  const subY = evaluateScientificMath("5x+3=y", { substitutions: { y: 18 } });
+  assert.equal(subY.ok, true);
+  if (subY.ok) {
+    assert.equal(subY.solvedVariable, "x");
+    assert.equal(subY.value, 3);
+  }
+
+  // Quadratic equations (real + complex roots)
+  const quadReal = evaluateScientificMath("x^2 - 5x + 6 = 0");
+  assert.equal(quadReal.ok, true);
+  if (quadReal.ok) {
+    assert.equal(quadReal.kind, "quadratic1var");
+    assert.deepEqual(quadReal.roots, ["3", "2"]);
+  }
+  const quadComplex = evaluateScientificMath("x^2 + 1 = 0");
+  assert.equal(quadComplex.ok, true);
+  if (quadComplex.ok) {
+    assert.equal(quadComplex.kind, "quadratic1var");
+    assert.deepEqual(quadComplex.roots, ["i", "-i"]);
+  }
+
+  // 2-equation linear system: 5x + 3 = y; x + y = 15
+  const sys = evaluateScientificMath("5x+3=y; x+y=15");
+  assert.equal(sys.ok, true);
+  if (sys.ok) {
+    assert.equal(sys.kind, "system2var");
+    assert.deepEqual(sys.systemSolution, { x: "2", y: "13" });
+    assert.equal(sys.formatted, "x = 2, y = 13");
+  }
 });

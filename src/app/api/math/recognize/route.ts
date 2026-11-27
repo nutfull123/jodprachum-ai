@@ -16,22 +16,32 @@ const MATH_RECOGNITION_SCHEMA = {
     expression: {
       type: "STRING",
       description:
-        "Clean ASCII math expression evaluable by standard calculator parser using +, -, *, /, ^, !, %, (, ), sqrt(), cbrt(), sin(), cos(), tan(), asin(), acos(), atan(), log(), ln(), abs(), pi, e, and optional single variable = equation.",
+        "Clean ASCII math expression or equation evaluable by standard calculator parser using +, -, *, /, ^, !, %, (, ), sqrt(), cbrt(), sin(), cos(), tan(), asin(), acos(), atan(), log(), ln(), abs(), pi, e, and optional = equation (supports 1 or 2 variables such as 5x+3=y or 2 equations separated by ;).",
     },
     displayText: {
       type: "STRING",
-      description: "Clean human-readable equation matching the handwriting.",
+      description: "Clean human-readable equation matching the image or handwriting.",
+    },
+    solution: {
+      type: "STRING",
+      description:
+        "Concise final answer or symbolic rearrangement (in Thai/math notation), especially helpful when solving equations, systems, derivatives, or integrals.",
+    },
+    steps: {
+      type: "ARRAY",
+      items: { type: "STRING" },
+      description: "Short Thai step-by-step explanation of how to solve the equation.",
     },
   },
   required: ["expression", "displayText"],
 };
 
-const MATH_RECOGNITION_PROMPT = `Transcribe the handwritten mathematical or scientific equation in this image ONLY.
+const MATH_RECOGNITION_PROMPT = `Transcribe AND solve the mathematical or scientific equation shown in this image (either handwritten or a photo/screenshot of a math problem).
 Rules:
-1. Do NOT calculate or guess the answer unless the user literally wrote "= <number>" in the image.
-2. Convert fractions like a over b into (a)/(b), square roots into sqrt(...), exponents into ^(...), multiplication signs x or · into *, division ÷ into /.
-3. Use lowercase function names: sin(), cos(), tan(), asin(), acos(), atan(), log(), ln(), sqrt(), abs(), pi, e.
-4. Keep Thai/English prose out of "expression". If unclear, output your best exact mathematical transcription.`;
+1. Extract the exact ASCII expression into "expression" (convert fractions a/b -> (a)/(b), roots -> sqrt(...), exponents -> ^(...), ×/· -> *, ÷ -> /; separate multiple simultaneous equations with ";").
+2. Keep variables like x, y cleanly (e.g., "5x + 3 = y", "x^2 - 5x + 6 = 0", "5x + 3 = y; x + y = 15").
+3. Put the exact readable equation into "displayText".
+4. Put the computed answer/solution (and symbolic form if multi-variable) in "solution", and concise Thai step-by-step lines in "steps".`;
 
 async function callGeminiVision(
   model: string,
@@ -161,11 +171,15 @@ export async function POST(req: Request) {
     const parsed = JSON.parse(textPart) as {
       expression?: string;
       displayText?: string;
+      solution?: string;
+      steps?: string[];
     };
 
     return NextResponse.json({
       expression: (parsed.expression || "").trim(),
       displayText: (parsed.displayText || parsed.expression || "").trim(),
+      solution: (parsed.solution || "").trim(),
+      steps: Array.isArray(parsed.steps) ? parsed.steps : [],
     });
   } catch (err) {
     return NextResponse.json(

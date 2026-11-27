@@ -50,6 +50,15 @@ const nextConfig = {
           },
         ],
       },
+      {
+        source: "/",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "no-cache, must-revalidate",
+          },
+        ],
+      },
     ];
   },
   webpack(config, { isServer, webpack }) {
@@ -68,6 +77,10 @@ const nextConfig = {
         os: false,
       };
     }
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      canvas: false,
+    };
     return config;
   },
 };

@@ -13,7 +13,47 @@ export const PORTRAIT_WIDTH = 1000;
 export const SLIDE_WIDTH = 1280;
 export const SLIDE_HEIGHT = 720;
 
+export type PaperSize =
+  | "goodnotes_standard"
+  | "a4"
+  | "a5"
+  | "a3"
+  | "b5"
+  | "letter"
+  | "square"
+  | "slide16x9"
+  | "pdf_custom";
+
+export type PageOrientation = "portrait" | "landscape";
+
+export interface PaperSizeSpec {
+  id: Exclude<PaperSize, "pdf_custom">;
+  label: string;
+  width: number;
+  height: number;
+}
+
+export const PAPER_SIZES: PaperSizeSpec[] = [
+  { id: "a4", label: "A4 (มาตรฐาน)", width: 1000, height: 1414 },
+  { id: "goodnotes_standard", label: "GoodNotes (ยาว)", width: 1000, height: 1600 },
+  { id: "a5", label: "A5 (พกพา)", width: 800, height: 1131 },
+  { id: "b5", label: "B5 (สมุดเรียน)", width: 920, height: 1307 },
+  { id: "letter", label: "Letter (อเมริกา)", width: 1000, height: 1294 },
+  { id: "a3", label: "A3 (กระดาษใหญ่)", width: 1414, height: 2000 },
+  { id: "square", label: "สี่เหลี่ยมจัตุรัส", width: 1100, height: 1100 },
+  { id: "slide16x9", label: "สไลด์ 16:9", width: 720, height: 1280 },
+];
+
 export type NotebookTool = "select" | "pen" | "highlighter" | "eraser";
+
+export type EraserMode = "partial" | "stroke";
+
+export const ERASER_SIZES = [
+  { label: "S", value: 10 },
+  { label: "M", value: 20 },
+  { label: "L", value: 34 },
+  { label: "XL", value: 52 },
+] as const;
 
 export type StrokePoint = [number, number, number]; // [x, y, pressure]
 
@@ -21,11 +61,27 @@ export interface NotebookPage {
   id: string;
   title?: string;
   paperTemplate: PaperTemplate;
+  pageWidth?: number;
   pageHeight: number;
+  paperSize?: PaperSize;
+  orientation?: PageOrientation;
   aspect?: "portrait" | "slide16x9";
+  customTemplateId?: string;
+  backgroundImageDataUrl?: string;
+  backgroundImageBlobId?: string;
   order: number;
   updatedAt: number;
   deleted?: boolean;
+}
+
+export interface CustomPaperTemplate {
+  id: string;
+  name: string;
+  dataUrl: string;
+  width: number;
+  height: number;
+  defaultOrientation: PageOrientation;
+  createdAt: number;
 }
 
 export interface InkStroke {
@@ -55,7 +111,48 @@ export type CanvasItemType =
   | "youtube"
   | "table";
 
-export type ShapeKind = "rect" | "rounded" | "circle" | "banner";
+export type ShapeKind =
+  | "rounded"
+  | "rect"
+  | "circle"
+  | "triangle"
+  | "diamond"
+  | "pentagon"
+  | "hexagon"
+  | "star"
+  | "arrow_right"
+  | "arrow_left"
+  | "arrow_up"
+  | "arrow_down"
+  | "callout"
+  | "banner"
+  | "heart"
+  | "cloud";
+
+export const SHAPE_CATALOG: Array<{
+  kind: ShapeKind;
+  label: string;
+  defaultWidth: number;
+  defaultHeight: number;
+  defaultText?: string;
+}> = [
+  { kind: "rounded", label: "มุมโค้ง", defaultWidth: 280, defaultHeight: 150 },
+  { kind: "rect", label: "สี่เหลี่ยม", defaultWidth: 280, defaultHeight: 150 },
+  { kind: "circle", label: "วงกลม/รี", defaultWidth: 180, defaultHeight: 180 },
+  { kind: "triangle", label: "สามเหลี่ยม", defaultWidth: 200, defaultHeight: 180 },
+  { kind: "diamond", label: "ข้าวหลามตัด", defaultWidth: 200, defaultHeight: 180 },
+  { kind: "pentagon", label: "ห้าเหลี่ยม", defaultWidth: 190, defaultHeight: 190 },
+  { kind: "hexagon", label: "หกเหลี่ยม", defaultWidth: 200, defaultHeight: 180 },
+  { kind: "star", label: "ดาว 5 แฉก", defaultWidth: 190, defaultHeight: 190 },
+  { kind: "arrow_right", label: "ลูกศรขวา", defaultWidth: 220, defaultHeight: 120 },
+  { kind: "arrow_left", label: "ลูกศรซ้าย", defaultWidth: 220, defaultHeight: 120 },
+  { kind: "arrow_up", label: "ลูกศรขึ้น", defaultWidth: 130, defaultHeight: 200 },
+  { kind: "arrow_down", label: "ลูกศรลง", defaultWidth: 130, defaultHeight: 200 },
+  { kind: "callout", label: "กล่องคำพูด", defaultWidth: 280, defaultHeight: 160, defaultText: "หมายเหตุ" },
+  { kind: "banner", label: "แถบหัวข้อ", defaultWidth: 340, defaultHeight: 84, defaultText: "หัวข้อสำคัญ" },
+  { kind: "heart", label: "หัวใจ", defaultWidth: 180, defaultHeight: 170 },
+  { kind: "cloud", label: "ก้อนเมฆ", defaultWidth: 260, defaultHeight: 170 },
+];
 
 export type LinkProvider = "gdrive" | "onedrive" | "dropbox" | "pdf" | "web";
 

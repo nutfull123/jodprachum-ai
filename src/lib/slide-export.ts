@@ -1,14 +1,15 @@
 import {
-  PORTRAIT_WIDTH,
-  SLIDE_HEIGHT,
-  SLIDE_WIDTH,
   isDarkPaperTemplate,
   type CanvasItem,
+  type CustomPaperTemplate,
   type NotebookPage,
   type ShootNotebook,
 } from "../types/notebook";
 import { sanitizeFileName } from "./export-utils";
 import { ensureNotebookPages, strokePointsToSvgPath } from "./notebook-crdt";
+import { resolvePageDimensions } from "./paper-utils";
+import { getShapeSvgPath } from "./shape-svg";
+import { getMediaBlob } from "./storage";
 
 function loadImage(src: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
@@ -215,22 +216,24 @@ async function drawItemToContext(
     return;
   }
 
-  if (
-    item.type === "sticky" ||
-    item.type === "meeting_card" ||
-    item.type === "shape"
-  ) {
+  if (item.type === "shape") {
+    const kind = item.shapeKind || "rounded";
+    const d = getShapeSvgPath(kind, item.width, item.height, 3);
+    ctx.save();
+    ctx.translate(item.x, item.y);
+    const p2d = new Path2D(d);
+    ctx.fillStyle = item.bgColor || "#EFFAF8";
+    ctx.strokeStyle = item.color || "#0F766E";
+    ctx.lineWidth = 2;
+    ctx.fill(p2d);
+    ctx.stroke(p2d);
+    ctx.restore();
+  } else if (item.type === "sticky" || item.type === "meeting_card") {
     ctx.fillStyle = item.bgColor || "#FEF9C3";
     ctx.strokeStyle = item.color || "#D6D3C9";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.roundRect(
-      item.x,
-      item.y,
-      item.width,
-      item.height,
-      item.shapeKind === "circle" ? Math.min(item.width, item.height) / 2 : 14
-    );
+    ctx.roundRect(item.x, item.y, item.width, item.height, 14);
     ctx.fill();
     ctx.stroke();
   }
@@ -264,14 +267,39 @@ async function drawItemToContext(
   }
 }
 
+async function resolvePageBackgroundUrl(
+  page: NotebookPage,
+  customTemplates?: CustomPaperTemplate[]
+): Promise<{ src: string; revoke: boolean } | null> {
+  if (page.backgroundImageBlobId) {
+    try {
+      const rec = await getMediaBlob(page.backgroundImageBlobId);
+      if (rec?.blob) {
+        return { src: URL.createObjectURL(rec.blob), revoke: true };
+      }
+    } catch {
+      // Fallback below
+    }
+  }
+  if (page.backgroundImageDataUrl) {
+    return { src: page.backgroundImageDataUrl, revoke: false };
+  }
+  if (page.customTemplateId && customTemplates) {
+    const found = customTemplates.find((t) => t.id === page.customTemplateId);
+    if (found?.dataUrl) {
+      return { src: found.dataUrl, revoke: false };
+    }
+  }
+  return null;
+}
+
 export async function renderNotebookPageToCanvas(
   notebook: ShootNotebook,
   page: NotebookPage,
-  pageIndex: number
+  pageIndex: number,
+  customTemplates?: CustomPaperTemplate[]
 ): Promise<HTMLCanvasElement> {
-  const width = page.aspect === "slide16x9" ? SLIDE_WIDTH : PORTRAIT_WIDTH;
-  const height =
-    page.aspect === "slide16x9" ? SLIDE_HEIGHT : page.pageHeight || 1600;
+  const { width, height } = resolvePageDimensions(page);
   const dark = isDarkPaperTemplate(page.paperTemplate);
 
   const canvas = document.createElement("canvas");
@@ -281,6 +309,18 @@ export async function renderNotebookPageToCanvas(
   if (!ctx) return canvas;
 
   drawTemplateBackground(ctx, page.paperTemplate, width, height);
+
+  const bgAsset = await resolvePageBackgroundUrl(page, customTemplates);
+  if (bgAsset) {
+    try {
+      const bgImg = await loadImage(bgAsset.src);
+      if (bgImg) {
+        ctx.drawImage(bgImg, 0, 0, width, height);
+      }
+    } finally {
+      if (bgAsset.revoke) URL.revokeObjectURL(bgAsset.src);
+    }
+  }
 
   const pageItems = notebook.items
     .filter(
@@ -404,7 +444,8 @@ function buildMultiPagePdfBlob(
 }
 
 export async function exportNotebookToPdf(
-  notebook: ShootNotebook
+  notebook: ShootNotebook,
+  customTemplates?: CustomPaperTemplate[]
 ): Promise<void> {
   const pages = ensureNotebookPages(notebook);
   const rendered: Array<{
@@ -414,7 +455,12 @@ export async function exportNotebookToPdf(
   }> = [];
 
   for (let i = 0; i < pages.length; i += 1) {
-    const canvas = await renderNotebookPageToCanvas(notebook, pages[i], i);
+    const canvas = await renderNotebookPageToCanvas(
+      notebook,
+      pages[i],
+      i,
+      customTemplates
+    );
     const jpegUrl = canvas.toDataURL("image/jpeg", 0.92);
     const base64 = jpegUrl.split(",")[1] || "";
     rendered.push({
@@ -442,28 +488,26 @@ function toHex6(color?: string, fallback: string = "1C1B18"): string {
 }
 
 export async function exportNotebookToPptx(
-  notebook: ShootNotebook
+  notebook: ShootNotebook,
+  customTemplates?: CustomPaperTemplate[]
 ): Promise<void> {
   const PptxGenJS = (await import("pptxgenjs")).default;
   const pptx = new PptxGenJS();
 
   const pages = ensureNotebookPages(notebook);
-  const firstIsSlide = pages[0]?.aspect === "slide16x9";
-  const slideW = firstIsSlide ? 10 : 7.5;
-  const slideH = firstIsSlide ? 5.625 : 10;
+  const firstDims = resolvePageDimensions(pages[0]);
+  const firstIsLandscape = firstDims.width > firstDims.height;
+  const slideW = firstIsLandscape ? 10 : 7.5;
+  const slideH = firstIsLandscape ? Number((10 * (firstDims.height / firstDims.width)).toFixed(3)) : Number((7.5 * (firstDims.height / firstDims.width)).toFixed(3));
 
-  if (firstIsSlide) {
-    pptx.layout = "LAYOUT_16x9";
-  } else {
-    pptx.defineLayout({ name: "SHOOTNOTE_PORTRAIT", width: 7.5, height: 10 });
-    pptx.layout = "SHOOTNOTE_PORTRAIT";
-  }
+  pptx.defineLayout({ name: "SHOOTNOTE_DYNAMIC", width: slideW, height: slideH });
+  pptx.layout = "SHOOTNOTE_DYNAMIC";
 
   for (let idx = 0; idx < pages.length; idx += 1) {
     const page = pages[idx];
-    const vW = page.aspect === "slide16x9" ? SLIDE_WIDTH : PORTRAIT_WIDTH;
-    const vH =
-      page.aspect === "slide16x9" ? SLIDE_HEIGHT : page.pageHeight || 1600;
+    const dims = resolvePageDimensions(page);
+    const vW = dims.width;
+    const vH = dims.height;
     const scaleX = slideW / vW;
     const scaleY = slideH / vH;
     const dark = isDarkPaperTemplate(page.paperTemplate);
@@ -476,6 +520,23 @@ export async function exportNotebookToPptx(
           ? "FDF8EC"
           : "FFFFFF",
     };
+
+    const bgAsset = await resolvePageBackgroundUrl(page, customTemplates);
+    if (bgAsset) {
+      try {
+        if (bgAsset.src.startsWith("data:")) {
+          slide.addImage({
+            data: bgAsset.src,
+            x: 0,
+            y: 0,
+            w: slideW,
+            h: slideH,
+          });
+        }
+      } finally {
+        if (bgAsset.revoke) URL.revokeObjectURL(bgAsset.src);
+      }
+    }
 
     const pageItems = notebook.items
       .filter(

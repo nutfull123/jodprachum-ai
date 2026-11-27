@@ -78,7 +78,7 @@ export function AppUpdateBanner({
 
       {updateInfo.highlights.length > 0 && (
         <ul className="space-y-1 rounded-xl border border-line bg-paper px-3 py-2.5 text-xs text-ink">
-          {updateInfo.highlights.slice(0, 3).map((item, idx) => (
+          {updateInfo.highlights.slice(0, 4).map((item, idx) => (
             <li key={idx} className="flex items-start gap-1.5 leading-relaxed">
               <span className="text-accent font-bold">•</span>
               <span>{item}</span>

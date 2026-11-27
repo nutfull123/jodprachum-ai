@@ -25,7 +25,19 @@ export function createNotebookPage(
   paperTemplate: PaperTemplate = "lined",
   pageHeight: number = 1600,
   id?: string,
-  aspect: "portrait" | "slide16x9" = "portrait"
+  aspect: "portrait" | "slide16x9" = "portrait",
+  extra?: Partial<
+    Pick<
+      NotebookPage,
+      | "pageWidth"
+      | "paperSize"
+      | "orientation"
+      | "customTemplateId"
+      | "backgroundImageDataUrl"
+      | "backgroundImageBlobId"
+      | "title"
+    >
+  >
 ): NotebookPage {
   const now = Date.now();
   return {
@@ -35,10 +47,16 @@ export function createNotebookPage(
         ? `page-${crypto.randomUUID().slice(0, 8)}`
         : `page-${now}-${order}`),
     paperTemplate,
-    pageHeight: aspect === "slide16x9" ? SLIDE_HEIGHT : pageHeight,
+    pageHeight:
+      extra?.pageWidth && extra?.orientation === "landscape"
+        ? pageHeight
+        : aspect === "slide16x9" && !extra?.pageWidth
+          ? SLIDE_HEIGHT
+          : pageHeight,
     aspect,
     order,
     updatedAt: now,
+    ...extra,
   };
 }
 
@@ -377,9 +395,23 @@ function mergePagesLWW(
       map.set(p.id, p);
     } else {
       const winner = p.updatedAt >= existing.updatedAt ? p : existing;
+      const sameGeometry =
+        (existing.orientation ?? "portrait") === (p.orientation ?? "portrait") &&
+        (existing.paperSize ?? "goodnotes_standard") ===
+          (p.paperSize ?? "goodnotes_standard");
       map.set(p.id, {
         ...winner,
-        pageHeight: Math.max(existing.pageHeight || 1600, p.pageHeight || 1600),
+        pageWidth: winner.pageWidth ?? existing.pageWidth,
+        pageHeight: sameGeometry
+          ? Math.max(existing.pageHeight || 1600, p.pageHeight || 1600)
+          : winner.pageHeight || 1600,
+        paperSize: winner.paperSize ?? existing.paperSize,
+        orientation: winner.orientation ?? existing.orientation,
+        customTemplateId: winner.customTemplateId ?? existing.customTemplateId,
+        backgroundImageDataUrl:
+          winner.backgroundImageDataUrl ?? existing.backgroundImageDataUrl,
+        backgroundImageBlobId:
+          winner.backgroundImageBlobId ?? existing.backgroundImageBlobId,
       });
     }
   }

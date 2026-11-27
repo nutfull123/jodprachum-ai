@@ -8,13 +8,14 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import type { ShootNotebook } from "../../types/notebook";
+import type { CustomPaperTemplate, ShootNotebook } from "../../types/notebook";
 import { ensureNotebookPages } from "../../lib/notebook-crdt";
 import { renderNotebookPageToCanvas } from "../../lib/slide-export";
 
 interface SlidePresenterModalProps {
   isOpen: boolean;
   notebook: ShootNotebook;
+  customTemplates?: CustomPaperTemplate[];
   initialPageIndex: number;
   onClose: () => void;
 }
@@ -22,6 +23,7 @@ interface SlidePresenterModalProps {
 export function SlidePresenterModal({
   isOpen,
   notebook,
+  customTemplates,
   initialPageIndex,
   onClose,
 }: SlidePresenterModalProps) {
@@ -49,7 +51,7 @@ export function SlidePresenterModal({
     if (!isOpen || !currentPage) return;
     let cancelled = false;
 
-    renderNotebookPageToCanvas(notebook, currentPage, slideIdx)
+    renderNotebookPageToCanvas(notebook, currentPage, slideIdx, customTemplates)
       .then((canvas) => {
         if (cancelled) return;
         setSlideDims({ width: canvas.width, height: canvas.height });

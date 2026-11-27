@@ -1,13 +1,18 @@
 import type { MeetingAnalysis, SavedMeeting } from "../types/meeting";
-import type { NotebookFolder, ShootNotebook } from "../types/notebook";
+import type {
+  CustomPaperTemplate,
+  NotebookFolder,
+  ShootNotebook,
+} from "../types/notebook";
 
 const DB_NAME = "jodprachum_local_v1";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE_MEETINGS = "meetings";
 const STORE_AUDIO = "audio_blobs";
 const STORE_NOTEBOOKS = "notebooks";
 const STORE_MEDIA = "media_blobs";
 const STORE_FOLDERS = "folders";
+const STORE_TEMPLATES = "custom_templates";
 
 const LS_API_KEY = "jodprachum_gemini_key";
 const LS_PASSCODE = "jodprachum_passcode";
@@ -37,6 +42,9 @@ function openDatabase(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_FOLDERS)) {
         db.createObjectStore(STORE_FOLDERS, { keyPath: "id" });
+      }
+      if (!db.objectStoreNames.contains(STORE_TEMPLATES)) {
+        db.createObjectStore(STORE_TEMPLATES, { keyPath: "id" });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -283,6 +291,49 @@ export async function deleteFolder(id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_FOLDERS, "readwrite");
     tx.objectStore(STORE_FOLDERS).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// =========================================================================
+// Custom Paper Templates
+// =========================================================================
+
+export async function listCustomTemplates(): Promise<CustomPaperTemplate[]> {
+  if (typeof window === "undefined") return [];
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_TEMPLATES, "readonly");
+    const req = tx.objectStore(STORE_TEMPLATES).getAll();
+    req.onsuccess = () => {
+      const rows = (req.result || []) as CustomPaperTemplate[];
+      rows.sort((a, b) => b.createdAt - a.createdAt);
+      resolve(rows);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function saveCustomTemplate(
+  tpl: CustomPaperTemplate
+): Promise<void> {
+  if (typeof window === "undefined") return;
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_TEMPLATES, "readwrite");
+    tx.objectStore(STORE_TEMPLATES).put(tpl);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteCustomTemplate(id: string): Promise<void> {
+  if (typeof window === "undefined") return;
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_TEMPLATES, "readwrite");
+    tx.objectStore(STORE_TEMPLATES).delete(id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

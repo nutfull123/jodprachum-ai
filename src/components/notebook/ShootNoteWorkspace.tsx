@@ -25,19 +25,24 @@ import {
 import {
   GOODNOTES_COLORS,
   HIGHLIGHTER_COLORS,
+  SHAPE_CATALOG,
   SLIDE_HEIGHT,
   isDarkPaperTemplate,
   type CanvasItem,
+  type CustomPaperTemplate,
+  type EraserMode,
   type InkStroke,
   type LinkProvider,
   type NotebookFolder,
   type NotebookPage,
   type NotebookTool,
+  type PaperSize,
   type PaperTemplate,
   type PeerPresence,
   type ShapeKind,
   type ShootNotebook,
 } from "../../types/notebook";
+import { applyPartialEraseAlongSegment } from "../../lib/eraser-utils";
 import { formatFileSize } from "../../lib/link-utils";
 import {
   compressFileLosslessIfBeneficial,
@@ -54,6 +59,11 @@ import {
   mergeNotebook,
   type SlideLayoutPreset,
 } from "../../lib/notebook-crdt";
+import {
+  getDimensionsForPaperSize,
+  resolvePageDimensions,
+} from "../../lib/paper-utils";
+import { importPdfFileToPages } from "../../lib/pdf-import";
 import {
   createRoomSyncSession,
   type NotebookDelta,
@@ -72,6 +82,7 @@ import {
   setDisplayName,
 } from "../../lib/storage";
 import { downloadTextFile, sanitizeFileName } from "../../lib/export-utils";
+import { CustomTemplateModal } from "./CustomTemplateModal";
 import { GoodNotesCanvas } from "./GoodNotesCanvas";
 import { InsertLinkModal } from "./InsertLinkModal";
 import { JoinRoomPromptModal } from "./JoinRoomPromptModal";
@@ -85,6 +96,7 @@ import { SlidePresenterModal } from "./SlidePresenterModal";
 interface ShootNoteWorkspaceProps {
   notebooks: ShootNotebook[];
   folders: NotebookFolder[];
+  customTemplates: CustomPaperTemplate[];
   activeNotebookId: string | null;
   currentFolderId: string | null;
   notebookView: "home" | "editor";
@@ -107,11 +119,14 @@ interface ShootNoteWorkspaceProps {
   onSaveFolder: (folder: NotebookFolder) => void;
   onDeleteFolder: (folderId: string) => void;
   onMoveNotebook: (notebookId: string, targetFolderId: string | null) => void;
+  onSaveCustomTemplate: (tpl: CustomPaperTemplate) => void;
+  onDeleteCustomTemplate: (id: string) => void;
 }
 
 export function ShootNoteWorkspace({
   notebooks,
   folders,
+  customTemplates,
   activeNotebookId,
   currentFolderId,
   notebookView,
@@ -134,6 +149,8 @@ export function ShootNoteWorkspace({
   onSaveFolder,
   onDeleteFolder,
   onMoveNotebook,
+  onSaveCustomTemplate,
+  onDeleteCustomTemplate,
 }: ShootNoteWorkspaceProps) {
   const activeNotebook = useMemo(
     () => notebooks.find((n) => n.id === activeNotebookId) || null,
@@ -154,6 +171,10 @@ export function ShootNoteWorkspace({
   }, [activePages, activePageId]);
 
   const activePage: NotebookPage | null = activePages[activePageIndex] || null;
+  const activePageDims = useMemo(
+    () => resolvePageDimensions(activePage),
+    [activePage]
+  );
 
   // Tool state
   const [tool, setTool] = useState<NotebookTool>("pen");
@@ -163,12 +184,21 @@ export function ShootNoteWorkspace({
   );
   const [penSize, setPenSize] = useState<number>(6);
   const [highlightSize, setHighlightSize] = useState<number>(22);
-  const [palmRejection, setPalmRejection] = useState<boolean>(false);
+  const [fingerDrawEnabled, setFingerDrawEnabled] = useState<boolean>(false);
+  const [stylusDetected, setStylusDetected] = useState<boolean>(false);
+  const [eraserMode, setEraserMode] = useState<EraserMode>("partial");
+  const [eraserSize, setEraserSize] = useState<number>(20);
   const [autoShape, setAutoShape] = useState<boolean>(true);
   const [calcOpen, setCalcOpen] = useState<boolean>(false);
   const [linkModalOpen, setLinkModalOpen] = useState<boolean>(false);
+  const [customTemplateModalOpen, setCustomTemplateModalOpen] =
+    useState<boolean>(false);
   const [presenterOpen, setPresenterOpen] = useState<boolean>(false);
   const [slideLayoutMenuOpen, setSlideLayoutMenuOpen] = useState<boolean>(false);
+  const [isImportingPdf, setIsImportingPdf] = useState<boolean>(false);
+
+  const eraserUndoBaseRef = useRef<ShootNotebook | null>(null);
+  const eraserSessionPushedRef = useRef<boolean>(false);
 
   // Undo/Redo snapshots per notebook edit session
   const [undoStack, setUndoStack] = useState<ShootNotebook[]>([]);
@@ -379,13 +409,23 @@ export function ShootNoteWorkspace({
     const rawPages = getRawPages(activeNotebook);
     const maxOrder = Math.max(-1, ...rawPages.map((p) => p.order));
     const isSlides =
-      activeNotebook.kind === "slides" || activePage.aspect === "slide16x9";
+      activeNotebook.kind === "slides" ||
+      activePageDims.paperSize === "slide16x9";
     const newPage = createNotebookPage(
       maxOrder + 1,
       activePage.paperTemplate,
-      isSlides ? SLIDE_HEIGHT : 1600,
+      isSlides ? SLIDE_HEIGHT : activePageDims.height,
       undefined,
-      isSlides ? "slide16x9" : "portrait"
+      activePageDims.orientation === "landscape" || isSlides
+        ? "slide16x9"
+        : "portrait",
+      {
+        pageWidth: activePageDims.width,
+        paperSize: activePageDims.paperSize,
+        orientation: activePageDims.orientation,
+        customTemplateId: activePage.customTemplateId,
+        backgroundImageDataUrl: activePage.backgroundImageDataUrl,
+      }
     );
     const layoutItems =
       isSlides && slideLayout
@@ -485,7 +525,20 @@ export function ShootNoteWorkspace({
   };
 
   const updateActivePage = (
-    patch: Partial<Pick<NotebookPage, "paperTemplate" | "pageHeight">>,
+    patch: Partial<
+      Pick<
+        NotebookPage,
+        | "paperTemplate"
+        | "pageWidth"
+        | "pageHeight"
+        | "paperSize"
+        | "orientation"
+        | "aspect"
+        | "customTemplateId"
+        | "backgroundImageDataUrl"
+        | "backgroundImageBlobId"
+      >
+    >,
     pushHistory: boolean = true
   ) => {
     if (!activeNotebook || !activePage) return;
@@ -517,6 +570,69 @@ export function ShootNoteWorkspace({
     syncSessionRef.current?.broadcastDelta({ type: "page", page: updatedPage });
   };
 
+  const handleChangePaperSize = (nextSize: PaperSize) => {
+    if (!activePage || !activeNotebook) return;
+    const dims = getDimensionsForPaperSize(nextSize, activePageDims.orientation);
+    updateActivePage(
+      {
+        paperSize: nextSize,
+        pageWidth: dims.width,
+        pageHeight: dims.height,
+        aspect:
+          nextSize === "slide16x9" || activeNotebook.kind === "slides"
+            ? "slide16x9"
+            : "portrait",
+      },
+      true
+    );
+  };
+
+  const handleToggleOrientation = () => {
+    if (!activePage || !activeNotebook) return;
+    const nextOrientation =
+      activePageDims.orientation === "landscape" ? "portrait" : "landscape";
+    const swappedW =
+      nextOrientation === "landscape"
+        ? Math.max(activePageDims.width, activePageDims.height)
+        : Math.min(activePageDims.width, activePageDims.height);
+    const swappedH =
+      nextOrientation === "landscape"
+        ? Math.min(activePageDims.width, activePageDims.height)
+        : Math.max(activePageDims.width, activePageDims.height);
+
+    updateActivePage(
+      {
+        orientation: nextOrientation,
+        pageWidth: swappedW,
+        pageHeight: swappedH,
+        aspect:
+          activePageDims.paperSize === "slide16x9" ||
+          activeNotebook.kind === "slides"
+            ? "slide16x9"
+            : "portrait",
+      },
+      true
+    );
+  };
+
+  const handleApplyCustomTemplate = (tpl: CustomPaperTemplate) => {
+    if (!activePage || !activeNotebook) return;
+    updateActivePage(
+      {
+        paperTemplate: "blank",
+        customTemplateId: tpl.id,
+        backgroundImageDataUrl: tpl.dataUrl,
+        backgroundImageBlobId: undefined,
+        orientation: tpl.defaultOrientation,
+        pageWidth: tpl.width,
+        pageHeight: tpl.height,
+        aspect: activeNotebook.kind === "slides" ? "slide16x9" : "portrait",
+      },
+      true
+    );
+    showNotice(`ใช้เทมเพลต "${tpl.name}" กับหน้านี้แล้ว`);
+  };
+
   const handleAddStroke = (stroke: InkStroke) => {
     if (!activeNotebook) return;
     const next: ShootNotebook = {
@@ -526,6 +642,19 @@ export function ShootNoteWorkspace({
     };
     commitNotebookUpdate(next, true);
     syncSessionRef.current?.broadcastDelta({ type: "stroke", stroke });
+  };
+
+  const handleBeginEraserSession = () => {
+    eraserUndoBaseRef.current = activeNotebookRef.current;
+    eraserSessionPushedRef.current = false;
+  };
+
+  const ensureEraserSessionUndoSnapshot = () => {
+    if (!eraserSessionPushedRef.current && eraserUndoBaseRef.current) {
+      setUndoStack((u) => [...u.slice(-24), eraserUndoBaseRef.current!]);
+      setRedoStack([]);
+      eraserSessionPushedRef.current = true;
+    }
   };
 
   const handleEraseStrokes = (strokeIds: string[]) => {
@@ -546,27 +675,161 @@ export function ShootNoteWorkspace({
     }
 
     if (changed.length === 0) return;
+    ensureEraserSessionUndoSnapshot();
     const next: ShootNotebook = {
       ...activeNotebook,
       strokes: updatedStrokes,
       updatedAt: now,
     };
-    commitNotebookUpdate(next, true);
+    commitNotebookUpdate(next, false);
     changed.forEach((stroke) =>
       syncSessionRef.current?.broadcastDelta({ type: "stroke", stroke })
     );
   };
 
+  const handlePartialErase = (
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    radius: number
+  ) => {
+    const current = activeNotebookRef.current;
+    if (!current || !activePage) return;
+
+    const now = Date.now();
+    const res = applyPartialEraseAlongSegment(
+      current.strokes,
+      activePage.id,
+      activePageIndex === 0,
+      x0,
+      y0,
+      x1,
+      y1,
+      radius,
+      now
+    );
+
+    if (!res.anyChanged) return;
+    ensureEraserSessionUndoSnapshot();
+
+    const next: ShootNotebook = {
+      ...current,
+      strokes: res.strokes,
+      updatedAt: now,
+    };
+    activeNotebookRef.current = next;
+    commitNotebookUpdate(next, false);
+
+    res.erasedTombstones.forEach((stroke) =>
+      syncSessionRef.current?.broadcastDelta({ type: "stroke", stroke })
+    );
+    res.addedFragments.forEach((stroke) =>
+      syncSessionRef.current?.broadcastDelta({ type: "stroke", stroke })
+    );
+  };
+
+  const handleImportPdfAsNotebook = async (
+    file: File,
+    folderId?: string | null
+  ) => {
+    setIsImportingPdf(true);
+    try {
+      const importedPages = await importPdfFileToPages(file);
+      if (importedPages.length === 0) {
+        showNotice("ไม่พบหน้าเอกสารในไฟล์ PDF นี้");
+        return;
+      }
+
+      await Promise.all(
+        importedPages.map((p) =>
+          saveMediaBlob(p.blobId, p.blob, p.mimeType, p.fileName).catch(
+            () => undefined
+          )
+        )
+      );
+
+      const now = Date.now();
+      const firstPage = importedPages[0].page;
+      const newNb: ShootNotebook = {
+        id:
+          typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `nb-pdf-${now}`,
+        kind: "notebook",
+        title: file.name.replace(/\.pdf$/i, "") || "เอกสาร PDF",
+        folderId: folderId ?? currentFolderId ?? null,
+        paperTemplate: "blank",
+        pageHeight: firstPage.pageHeight,
+        pages: importedPages.map((p) => p.page),
+        strokes: [],
+        items: [],
+        metaUpdatedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      onUpsertNotebook(newNb);
+      await saveNotebook(newNb).catch(() => undefined);
+      onSelectNotebook(newNb.id);
+      setActivePageId(firstPage.id);
+      showNotice(`นำเข้า PDF "${newNb.title}" (${importedPages.length} หน้า) แล้ว`);
+    } catch {
+      showNotice("ไม่สามารถอ่านไฟล์ PDF นี้ได้");
+    } finally {
+      setIsImportingPdf(false);
+    }
+  };
+
+  const handleAppendPdfToActiveNotebook = async (file: File) => {
+    if (!activeNotebook) return;
+    setIsImportingPdf(true);
+    try {
+      const rawPages = getRawPages(activeNotebook);
+      const maxOrder = Math.max(-1, ...rawPages.map((p) => p.order));
+      const importedPages = await importPdfFileToPages(file, {
+        startOrder: maxOrder + 1,
+      });
+      if (importedPages.length === 0) {
+        showNotice("ไม่พบหน้าเอกสารในไฟล์ PDF นี้");
+        return;
+      }
+
+      await Promise.all(
+        importedPages.map((p) =>
+          saveMediaBlob(p.blobId, p.blob, p.mimeType, p.fileName).catch(
+            () => undefined
+          )
+        )
+      );
+
+      const newPages = importedPages.map((p) => p.page);
+      const next: ShootNotebook = {
+        ...activeNotebook,
+        pages: [...rawPages, ...newPages],
+        updatedAt: Date.now(),
+      };
+      commitNotebookUpdate(next, true);
+      setActivePageId(newPages[0].id);
+      newPages.forEach((page) =>
+        syncSessionRef.current?.broadcastDelta({ type: "page", page })
+      );
+      showNotice(`เพิ่มหน้าจาก PDF "${file.name}" (${newPages.length} หน้า) แล้ว`);
+    } catch {
+      showNotice("ไม่สามารถอ่านไฟล์ PDF นี้ได้");
+    } finally {
+      setIsImportingPdf(false);
+    }
+  };
+
   const addCanvasItem = (
     partial: Omit<CanvasItem, "id" | "pageId" | "zIndex" | "updatedAt">
   ) => {
-    if (!activeNotebook || !activePage) return;
+    const base = activeNotebookRef.current || activeNotebook;
+    if (!base || !activePage) return;
     const now = Date.now();
-    const maxZ = Math.max(
-      0,
-      ...activeNotebook.items.map((i) => i.zIndex || 0)
-    );
-    const pageItemCount = activeNotebook.items.filter(
+    const maxZ = Math.max(0, ...base.items.map((i) => i.zIndex || 0));
+    const pageItemCount = base.items.filter(
       (i) =>
         !i.deleted &&
         (i.pageId === activePage.id || (!i.pageId && activePageIndex === 0))
@@ -582,10 +845,11 @@ export function ShootNoteWorkspace({
       updatedAt: now,
     };
     const next: ShootNotebook = {
-      ...activeNotebook,
-      items: [...activeNotebook.items, item],
+      ...base,
+      items: [...base.items, item],
       updatedAt: now,
     };
+    activeNotebookRef.current = next;
     setTool("select");
     commitNotebookUpdate(next, true);
     syncSessionRef.current?.broadcastDelta({ type: "item", item });
@@ -792,7 +1056,8 @@ export function ShootNoteWorkspace({
     const canvas = await renderNotebookPageToCanvas(
       activeNotebook,
       activePage,
-      activePageIndex
+      activePageIndex,
+      customTemplates
     );
     canvas.toBlob((blob) => {
       if (!blob) return;
@@ -810,15 +1075,15 @@ export function ShootNoteWorkspace({
   const handleExportPdf = async () => {
     if (!activeNotebook) return;
     showNotice("กำลังสร้างไฟล์ PDF ทุกหน้า...");
-    await exportNotebookToPdf(activeNotebook).catch(() =>
-      showNotice("ส่งออก PDF ไม่สำเร็จ")
-    );
+    await exportNotebookToPdf(activeNotebook, customTemplates)
+      .then(() => showNotice("ส่งออก PDF เรียบร้อยแล้ว"))
+      .catch(() => showNotice("ส่งออก PDF ไม่สำเร็จ"));
   };
 
   const handleExportPptx = async () => {
     if (!activeNotebook) return;
     showNotice("กำลังสร้างไฟล์ PowerPoint (.pptx)...");
-    await exportNotebookToPptx(activeNotebook).catch(() =>
+    await exportNotebookToPptx(activeNotebook, customTemplates).catch(() =>
       showNotice("ส่งออก PowerPoint ไม่สำเร็จ")
     );
   };
@@ -1031,6 +1296,7 @@ export function ShootNoteWorkspace({
           notebooks={notebooks}
           folders={folders}
           currentFolderId={currentFolderId}
+          isImportingPdf={isImportingPdf}
           onChangeCurrentFolder={onChangeCurrentFolder}
           onOpenNotebook={(id) => {
             setLeftSidebarOpen(false);
@@ -1040,6 +1306,7 @@ export function ShootNoteWorkspace({
           onCreateNotebook={handleCreateNotebook}
           onDeleteNotebook={onDeleteNotebook}
           onImportBackup={handleImportBackup}
+          onImportPdfNotebook={handleImportPdfAsNotebook}
           onSaveFolder={onSaveFolder}
           onDeleteFolder={onDeleteFolder}
           onMoveNotebook={onMoveNotebook}
@@ -1222,9 +1489,9 @@ export function ShootNoteWorkspace({
                               : "ออฟไลน์"}
                       </span>
                     )}
-                    {palmRejection && (
+                    {!fingerDrawEnabled && (
                       <span className="hidden lg:inline-flex items-center gap-1 rounded-full bg-accent-soft border border-accent/25 px-2 py-0.5 font-medium text-accent-dark">
-                        ✏️ Apple Pencil · 2 นิ้วเลื่อน/ซูม
+                        ✏️ {stylusDetected ? "Apple Pencil · " : ""}1 นิ้วเลื่อน · 2 นิ้วซูม
                       </span>
                     )}
                     <span className="hidden md:inline-flex items-center gap-1 text-emerald-700 font-medium">
@@ -1256,14 +1523,22 @@ export function ShootNoteWorkspace({
                   tool={tool}
                   color={activeColor}
                   size={activeSize}
-                  palmRejection={palmRejection}
+                  fingerDrawEnabled={fingerDrawEnabled}
+                  stylusDetected={stylusDetected}
+                  eraserMode={eraserMode}
+                  eraserSize={eraserSize}
                   autoShape={autoShape}
                   calcOpen={calcOpen}
                   paperTemplate={activePage.paperTemplate}
+                  customTemplateId={activePage.customTemplateId}
+                  customTemplates={customTemplates}
+                  paperSize={activePageDims.paperSize}
+                  orientation={activePageDims.orientation}
                   canUndo={undoStack.length > 0}
                   canRedo={redoStack.length > 0}
                   roomId={activeNotebook.roomId}
                   peerCount={peers.length}
+                  isImportingPdf={isImportingPdf}
                   onSelectTool={setTool}
                   onChangeColor={(c) => {
                     if (tool === "highlighter") setHighlightColor(c);
@@ -1273,11 +1548,20 @@ export function ShootNoteWorkspace({
                     if (tool === "highlighter") setHighlightSize(s);
                     else setPenSize(s);
                   }}
-                  onTogglePalmRejection={() => setPalmRejection((v) => !v)}
+                  onToggleFingerDraw={() => setFingerDrawEnabled((v) => !v)}
+                  onChangeEraserMode={setEraserMode}
+                  onChangeEraserSize={setEraserSize}
                   onToggleAutoShape={() => setAutoShape((v) => !v)}
                   onToggleCalc={() => setCalcOpen((v) => !v)}
                   onChangeTemplate={(tpl: PaperTemplate) => {
-                    updateActivePage({ paperTemplate: tpl }, true);
+                    updateActivePage(
+                      {
+                        paperTemplate: tpl,
+                        customTemplateId: undefined,
+                        backgroundImageDataUrl: undefined,
+                      },
+                      true
+                    );
                     if (isDarkPaperTemplate(tpl) && penColor === "#1C1B18") {
                       setPenColor("#FFFFFF");
                     } else if (
@@ -1287,6 +1571,12 @@ export function ShootNoteWorkspace({
                       setPenColor("#1C1B18");
                     }
                   }}
+                  onSelectCustomTemplate={handleApplyCustomTemplate}
+                  onOpenCustomTemplateModal={() =>
+                    setCustomTemplateModalOpen(true)
+                  }
+                  onChangePaperSize={handleChangePaperSize}
+                  onToggleOrientation={handleToggleOrientation}
                   onInsertText={() =>
                     addCanvasItem({
                       type: "text",
@@ -1357,7 +1647,10 @@ export function ShootNoteWorkspace({
                       stickerLabel: label,
                     })
                   }
-                  onInsertShape={(shapeKind: ShapeKind) =>
+                  onInsertShape={(shapeKind: ShapeKind) => {
+                    const spec = SHAPE_CATALOG.find(
+                      (s) => s.kind === shapeKind
+                    );
                     addCanvasItem({
                       type: "shape",
                       x: 110,
@@ -1366,20 +1659,21 @@ export function ShootNoteWorkspace({
                         activePageIndex === 0
                           ? 230
                           : 120,
-                      width: shapeKind === "circle" ? 180 : 320,
-                      height: shapeKind === "banner" ? 80 : 160,
+                      width: spec?.defaultWidth ?? 240,
+                      height: spec?.defaultHeight ?? 150,
                       shapeKind,
-                      text: shapeKind === "banner" ? "หัวข้อสำคัญ" : "",
+                      text: spec?.defaultText ?? "",
                       bgColor: "#EFFAF8",
                       color: "#0F766E",
                       fontSize: 16,
-                    })
-                  }
+                    });
+                  }}
                   onOpenInsertLink={() => setLinkModalOpen(true)}
                   onOpenPresenter={() => setPresenterOpen(true)}
                   onUploadImage={handleUploadImage}
                   onUploadMedia={handleUploadMedia}
                   onUploadDocument={handleUploadDocument}
+                  onImportPdf={handleAppendPdfToActiveNotebook}
                   onUndo={handleUndo}
                   onRedo={handleRedo}
                   onExportPng={handleExportPng}
@@ -1689,24 +1983,32 @@ export function ShootNoteWorkspace({
               tool={tool}
               color={activeColor}
               size={activeSize}
-              palmRejection={palmRejection}
+              fingerDrawEnabled={fingerDrawEnabled}
+              eraserMode={eraserMode}
+              eraserSize={eraserSize}
+              customTemplates={customTemplates}
               autoShape={autoShape}
               peers={peers}
               svgExportRef={svgRef}
+              onStylusDetected={() => setStylusDetected(true)}
               onAddStroke={handleAddStroke}
               onEraseStrokes={handleEraseStrokes}
+              onBeginEraserSession={handleBeginEraserSession}
+              onPartialErase={handlePartialErase}
               onUpdateItem={handleUpdateItem}
               onDeleteItem={handleDeleteItem}
               onUpdateQuickBody={(quickBody) => updateMeta({ quickBody })}
               onExtendPage={() =>
                 updateActivePage(
-                  { pageHeight: (activePage.pageHeight || 1600) + 1000 },
+                  { pageHeight: (activePageDims.height || 1600) + 1000 },
                   true
                 )
               }
               onAddPage={() =>
                 handleAddPage(
-                  activePage.aspect === "slide16x9" ? "content" : undefined
+                  activePageDims.paperSize === "slide16x9"
+                    ? "content"
+                    : undefined
                 )
               }
               onCursorMove={(x, y) =>
@@ -1807,6 +2109,7 @@ export function ShootNoteWorkspace({
         passcode={passcode}
         onOpenApiModal={onOpenApiModal}
         onInsertResult={(text) => {
+          const lineCount = text.split("\n").length;
           addCanvasItem({
             type: "text",
             x: 90,
@@ -1814,20 +2117,59 @@ export function ShootNoteWorkspace({
               activeNotebook?.kind === "shortnote" && activePageIndex === 0
                 ? 230
                 : 120,
-            width: 360,
-            height: 92,
+            width: 420,
+            height: Math.max(96, lineCount * 28 + 36),
             text,
             color: "#0F766E",
-            fontSize: 20,
+            fontSize: 18,
           });
         }}
+        onInsertEquationImage={(dataUrl, width, height, solutionText) => {
+          const startY =
+            activeNotebook?.kind === "shortnote" && activePageIndex === 0
+              ? 230
+              : 120;
+          addCanvasItem({
+            type: "image",
+            x: 90,
+            y: startY,
+            width,
+            height,
+            dataUrl,
+            fileName: "equation.png",
+            mimeType: "image/png",
+          });
+          if (solutionText) {
+            const lineCount = solutionText.split("\n").length;
+            addCanvasItem({
+              type: "text",
+              x: 90,
+              y: startY + height + 18,
+              width: 420,
+              height: Math.max(96, lineCount * 28 + 36),
+              text: solutionText,
+              color: "#0F766E",
+              fontSize: 18,
+            });
+          }
+        }}
         onClose={() => setCalcOpen(false)}
+      />
+
+      <CustomTemplateModal
+        isOpen={customTemplateModalOpen}
+        customTemplates={customTemplates}
+        onSaveTemplate={onSaveCustomTemplate}
+        onApplyTemplateToPage={handleApplyCustomTemplate}
+        onDeleteTemplate={onDeleteCustomTemplate}
+        onClose={() => setCustomTemplateModalOpen(false)}
       />
 
       {activeNotebook && (
         <SlidePresenterModal
           isOpen={presenterOpen}
           notebook={activeNotebook}
+          customTemplates={customTemplates}
           initialPageIndex={activePageIndex}
           onClose={() => setPresenterOpen(false)}
         />

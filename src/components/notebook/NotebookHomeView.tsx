@@ -5,6 +5,7 @@ import {
   BookOpen,
   Check,
   ChevronRight,
+  FilePlus,
   Folder,
   FolderInput,
   FolderPlus,
@@ -37,6 +38,7 @@ interface NotebookHomeViewProps {
   notebooks: ShootNotebook[];
   folders: NotebookFolder[];
   currentFolderId: string | null;
+  isImportingPdf?: boolean;
   onChangeCurrentFolder: (folderId: string | null) => void;
   onOpenNotebook: (notebookId: string) => void;
   onCreateNotebook: (
@@ -45,6 +47,7 @@ interface NotebookHomeViewProps {
   ) => void;
   onDeleteNotebook: (notebookId: string) => void;
   onImportBackup: (file: File) => void;
+  onImportPdfNotebook: (file: File, folderId?: string | null) => void;
   onSaveFolder: (folder: NotebookFolder) => void;
   onDeleteFolder: (folderId: string) => void;
   onMoveNotebook: (notebookId: string, targetFolderId: string | null) => void;
@@ -121,11 +124,13 @@ export function NotebookHomeView({
   notebooks,
   folders,
   currentFolderId,
+  isImportingPdf = false,
   onChangeCurrentFolder,
   onOpenNotebook,
   onCreateNotebook,
   onDeleteNotebook,
   onImportBackup,
+  onImportPdfNotebook,
   onSaveFolder,
   onDeleteFolder,
   onMoveNotebook,
@@ -160,6 +165,7 @@ export function NotebookHomeView({
   // Status feedback toast
   const [toast, setToast] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfImportRef = useRef<HTMLInputElement | null>(null);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -411,6 +417,28 @@ export function NotebookHomeView({
               >
                 <Presentation className="h-3.5 w-3.5 text-indigo-600" />
                 <span>สไลด์ 16:9</span>
+              </button>
+
+              <input
+                ref={pdfImportRef}
+                type="file"
+                accept=".pdf,application/pdf"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onImportPdfNotebook(f, currentFolderId);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                disabled={isImportingPdf}
+                onClick={() => pdfImportRef.current?.click()}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900 hover:bg-sky-100 transition-colors disabled:opacity-50"
+                title="นำเข้าไฟล์ PDF เพื่อเขียนโน้ตและส่งออกเป็น PDF ได้ทันที"
+              >
+                <FilePlus className="h-3.5 w-3.5 text-sky-600" />
+                <span>{isImportingPdf ? "กำลังนำเข้า PDF..." : "นำเข้า PDF"}</span>
               </button>
 
               <input

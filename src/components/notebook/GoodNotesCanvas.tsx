@@ -20,12 +20,11 @@ import {
   ZoomOut,
 } from "lucide-react";
 import {
-  PORTRAIT_WIDTH,
-  SLIDE_HEIGHT,
-  SLIDE_WIDTH,
   STICKY_COLORS,
   isDarkPaperTemplate,
   type CanvasItem,
+  type CustomPaperTemplate,
+  type EraserMode,
   type InkStroke,
   type NotebookPage,
   type NotebookTool,
@@ -38,7 +37,9 @@ import { downloadTextFile, sanitizeFileName } from "../../lib/export-utils";
 import { formatFileSize } from "../../lib/link-utils";
 import { hitTestStroke } from "../../lib/media-utils";
 import { strokePointsToSvgPath } from "../../lib/notebook-crdt";
+import { resolvePageDimensions } from "../../lib/paper-utils";
 import { recognizeHeldShape } from "../../lib/shape-recognizer";
+import { getShapeSvgPath } from "../../lib/shape-svg";
 import { getMediaBlob } from "../../lib/storage";
 
 interface GoodNotesCanvasProps {
@@ -50,12 +51,24 @@ interface GoodNotesCanvasProps {
   tool: NotebookTool;
   color: string;
   size: number;
-  palmRejection: boolean;
+  fingerDrawEnabled: boolean;
+  eraserMode: EraserMode;
+  eraserSize: number;
+  customTemplates: CustomPaperTemplate[];
   autoShape: boolean;
   peers: PeerPresence[];
   svgExportRef: React.RefObject<SVGSVGElement | null>;
+  onStylusDetected?: () => void;
   onAddStroke: (stroke: InkStroke) => void;
   onEraseStrokes: (strokeIds: string[]) => void;
+  onBeginEraserSession: () => void;
+  onPartialErase: (
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    radius: number
+  ) => void;
   onUpdateItem: (item: CanvasItem) => void;
   onDeleteItem: (itemId: string) => void;
   onUpdateQuickBody: (quickBody: string) => void;
@@ -304,12 +317,18 @@ export function GoodNotesCanvas({
   tool,
   color,
   size,
-  palmRejection,
+  fingerDrawEnabled,
+  eraserMode,
+  eraserSize,
+  customTemplates,
   autoShape,
   peers,
   svgExportRef,
+  onStylusDetected,
   onAddStroke,
   onEraseStrokes,
+  onBeginEraserSession,
+  onPartialErase,
   onUpdateItem,
   onDeleteItem,
   onUpdateQuickBody,
@@ -320,13 +339,59 @@ export function GoodNotesCanvas({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
 
-  const isSlide = activePage.aspect === "slide16x9";
-  const virtualWidth = isSlide ? SLIDE_WIDTH : PORTRAIT_WIDTH;
-  const pageHeight = isSlide ? SLIDE_HEIGHT : activePage.pageHeight || 1600;
+  const dims = useMemo(() => resolvePageDimensions(activePage), [activePage]);
+  const isSlide = dims.paperSize === "slide16x9";
+  const virtualWidth = dims.width;
+  const pageHeight = dims.height;
+
+  const [blobBgUrl, setBlobBgUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let activeUrl: string | null = null;
+    let cancelled = false;
+    if (!activePage.backgroundImageBlobId) {
+      setBlobBgUrl(null);
+      return;
+    }
+    getMediaBlob(activePage.backgroundImageBlobId)
+      .then((rec) => {
+        if (cancelled) return;
+        if (rec?.blob) {
+          activeUrl = URL.createObjectURL(rec.blob);
+          setBlobBgUrl(activeUrl);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      if (activeUrl) URL.revokeObjectURL(activeUrl);
+    };
+  }, [activePage.backgroundImageBlobId]);
+
+  const customTemplateBgUrl = useMemo(() => {
+    if (activePage.backgroundImageDataUrl) {
+      return activePage.backgroundImageDataUrl;
+    }
+    if (activePage.customTemplateId) {
+      return (
+        customTemplates.find((t) => t.id === activePage.customTemplateId)
+          ?.dataUrl || null
+      );
+    }
+    return null;
+  }, [
+    activePage.backgroundImageDataUrl,
+    activePage.customTemplateId,
+    customTemplates,
+  ]);
+
+  const resolvedBgUrl = blobBgUrl || customTemplateBgUrl;
 
   const [scale, setScale] = useState(1);
   const [manualScale, setManualScale] = useState<number | null>(null);
   const [snappedPill, setSnappedPill] = useState<string | null>(null);
+  const [eraserCursor, setEraserCursor] = useState<{ x: number; y: number } | null>(
+    null
+  );
 
   // Active ink drawing (stored in refs + direct SVG DOM updates for 120Hz Apple Pencil fluidity)
   const livePointsRef = useRef<StrokePoint[]>([]);
@@ -339,6 +404,7 @@ export function GoodNotesCanvas({
   const activePointerIdRef = useRef<number | null>(null);
   const activePointerTypeRef = useRef<string | null>(null);
   const erasedInDragRef = useRef<Set<string>>(new Set());
+  const lastEraserCoordRef = useRef<{ x: number; y: number } | null>(null);
   const lastCursorSentRef = useRef(0);
 
   const twoFingerRef = useRef<{
@@ -350,8 +416,8 @@ export function GoodNotesCanvas({
 
   const toolRef = useRef(tool);
   toolRef.current = tool;
-  const palmRejectionRef = useRef(palmRejection);
-  palmRejectionRef.current = palmRejection;
+  const fingerDrawEnabledRef = useRef(fingerDrawEnabled);
+  fingerDrawEnabledRef.current = fingerDrawEnabled;
   const autoShapeRef = useRef(autoShape);
   autoShapeRef.current = autoShape;
   const colorRef = useRef(color);
@@ -461,7 +527,7 @@ export function GoodNotesCanvas({
         ev.preventDefault();
         return;
       }
-      if (!palmRejectionRef.current && ev.touches.length === 1) {
+      if (fingerDrawEnabledRef.current && ev.touches.length === 1) {
         ev.preventDefault();
       }
     };
@@ -504,7 +570,7 @@ export function GoodNotesCanvas({
         ev.preventDefault();
         return;
       }
-      if (!palmRejectionRef.current && ev.touches.length === 1) {
+      if (fingerDrawEnabledRef.current && ev.touches.length === 1) {
         ev.preventDefault();
       }
     };
@@ -680,6 +746,10 @@ export function GoodNotesCanvas({
       return;
     }
 
+    if (e.pointerType === "pen") {
+      onStylusDetected?.();
+    }
+
     // Never allow resting palm / finger touch to interrupt an active Apple Pencil stroke
     if (
       activePointerIdRef.current !== null &&
@@ -690,7 +760,8 @@ export function GoodNotesCanvas({
     }
 
     if (twoFingerRef.current.active) return;
-    if (palmRejection && e.pointerType !== "pen") return;
+    // When finger-draw is disabled, single-finger touch scrolls/pans natively instead of drawing
+    if (!fingerDrawEnabled && e.pointerType === "touch") return;
     if (e.pointerType !== "pen" && (e.target as HTMLElement).closest("textarea")) {
       return;
     }
@@ -712,13 +783,20 @@ export function GoodNotesCanvas({
     const { x, y } = toCanvasCoords(e.clientX, e.clientY);
 
     if (tool === "eraser") {
+      onBeginEraserSession();
       erasedInDragRef.current.clear();
-      const hits = visibleStrokes
-        .filter((s) => hitTestStroke(s, x, y, 16))
-        .map((s) => s.id);
-      if (hits.length > 0) {
-        hits.forEach((id) => erasedInDragRef.current.add(id));
-        onEraseStrokes(hits);
+      lastEraserCoordRef.current = { x, y };
+      setEraserCursor({ x, y });
+      if (eraserMode === "stroke") {
+        const hits = visibleStrokes
+          .filter((s) => hitTestStroke(s, x, y, eraserSize))
+          .map((s) => s.id);
+        if (hits.length > 0) {
+          hits.forEach((id) => erasedInDragRef.current.add(id));
+          onEraseStrokes(hits);
+        }
+      } else {
+        onPartialErase(x, y, x, y, eraserSize);
       }
       return;
     }
@@ -735,6 +813,9 @@ export function GoodNotesCanvas({
 
   const handleSurfacePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const { x, y } = toCanvasCoords(e.clientX, e.clientY);
+    if (tool === "eraser") {
+      setEraserCursor({ x, y });
+    }
 
     const now = Date.now();
     if (now - lastCursorSentRef.current > 75) {
@@ -781,19 +862,26 @@ export function GoodNotesCanvas({
     if (twoFingerRef.current.active) return;
     if (activePointerIdRef.current !== e.pointerId) return;
     if (tool === "select") return;
-    if (palmRejection && e.pointerType !== "pen") return;
+    if (!fingerDrawEnabled && e.pointerType === "touch") return;
 
     if (tool === "eraser") {
-      const hits = visibleStrokes
-        .filter(
-          (s) =>
-            !erasedInDragRef.current.has(s.id) && hitTestStroke(s, x, y, 16)
-        )
-        .map((s) => s.id);
-      if (hits.length > 0) {
-        hits.forEach((id) => erasedInDragRef.current.add(id));
-        onEraseStrokes(hits);
+      if (eraserMode === "stroke") {
+        const hits = visibleStrokes
+          .filter(
+            (s) =>
+              !erasedInDragRef.current.has(s.id) &&
+              hitTestStroke(s, x, y, eraserSize)
+          )
+          .map((s) => s.id);
+        if (hits.length > 0) {
+          hits.forEach((id) => erasedInDragRef.current.add(id));
+          onEraseStrokes(hits);
+        }
+      } else {
+        const prev = lastEraserCoordRef.current || { x, y };
+        onPartialErase(prev.x, prev.y, x, y, eraserSize);
       }
+      lastEraserCoordRef.current = { x, y };
       return;
     }
 
@@ -855,6 +943,7 @@ export function GoodNotesCanvas({
 
     if (tool === "eraser") {
       erasedInDragRef.current.clear();
+      lastEraserCoordRef.current = null;
       return;
     }
 
@@ -883,7 +972,11 @@ export function GoodNotesCanvas({
   };
 
   const drawingTouchAction =
-    tool === "select" ? "auto" : palmRejection ? "pan-y pinch-zoom" : "none";
+    tool === "select"
+      ? "auto"
+      : !fingerDrawEnabled
+        ? "pan-x pan-y pinch-zoom"
+        : "none";
 
   return (
     <div
@@ -906,6 +999,7 @@ export function GoodNotesCanvas({
           onPointerMove={handleSurfacePointerMove}
           onPointerUp={(e) => finishPointerInteraction(e, false)}
           onPointerCancel={(e) => finishPointerInteraction(e, true)}
+          onPointerLeave={() => setEraserCursor(null)}
           style={{
             width: `${virtualWidth}px`,
             height: `${pageHeight}px`,
@@ -923,10 +1017,19 @@ export function GoodNotesCanvas({
             tool === "pen" || tool === "highlighter"
               ? "cursor-crosshair"
               : tool === "eraser"
-                ? "cursor-cell"
+                ? "cursor-none"
                 : "cursor-default"
           }`}
         >
+          {/* Optional PDF / Custom Template Background Image */}
+          {resolvedBgUrl && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={resolvedBgUrl}
+              alt="พื้นหลังเอกสาร"
+              className="pointer-events-none absolute inset-0 z-0 h-full w-full object-fill select-none"
+            />
+          )}
           {/* Page watermark badge */}
           <div
             className={`pointer-events-none absolute right-5 top-3 z-10 font-mono text-[11px] font-medium ${
@@ -1251,23 +1354,24 @@ export function GoodNotesCanvas({
                 )}
 
                 {item.type === "shape" && (
-                  <div
-                    style={{
-                      backgroundColor: item.bgColor || "#EFFAF8",
-                      borderColor: item.color || "#0F766E",
-                      borderRadius:
-                        item.shapeKind === "circle"
-                          ? "9999px"
-                          : item.shapeKind === "rect"
-                            ? "4px"
-                            : item.shapeKind === "banner"
-                              ? "12px"
-                              : "18px",
-                    }}
-                    className={`h-full w-full border-2 flex items-center justify-center p-3 shadow-sm ${
-                      item.shapeKind === "banner" ? "border-l-8" : ""
-                    }`}
-                  >
+                  <div className="relative h-full w-full flex items-center justify-center p-3">
+                    <svg
+                      viewBox={`0 0 ${item.width} ${item.height}`}
+                      className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+                    >
+                      <path
+                        d={getShapeSvgPath(
+                          item.shapeKind || "rounded",
+                          item.width,
+                          item.height,
+                          3
+                        )}
+                        fill={item.bgColor || "#EFFAF8"}
+                        stroke={item.color || "#0F766E"}
+                        strokeWidth={2.5}
+                        strokeLinejoin="round"
+                      />
+                    </svg>
                     {isEditing ? (
                       <textarea
                         autoFocus
@@ -1283,12 +1387,12 @@ export function GoodNotesCanvas({
                         onBlur={() => setEditingItemId(null)}
                         placeholder="พิมพ์หัวข้อในกรอบ..."
                         style={{ fontSize: `${item.fontSize || 16}px` }}
-                        className="h-full w-full resize-none bg-transparent text-center font-semibold text-[#1C1B18] focus:outline-none"
+                        className="relative z-10 h-full w-full resize-none bg-transparent text-center font-semibold text-[#1C1B18] focus:outline-none p-2"
                       />
                     ) : (
                       <p
                         style={{ fontSize: `${item.fontSize || 16}px` }}
-                        className="font-semibold text-[#1C1B18] text-center whitespace-pre-wrap break-words"
+                        className="relative z-10 font-semibold text-[#1C1B18] text-center whitespace-pre-wrap break-words px-2"
                       >
                         {item.text || ""}
                       </p>
@@ -1598,6 +1702,20 @@ export function GoodNotesCanvas({
               fillOpacity={tool === "highlighter" ? 0.36 : 1}
             />
           </svg>
+
+          {/* Visual Eraser Ring Cursor */}
+          {tool === "eraser" && eraserCursor && (
+            <div
+              data-eraser-ring="true"
+              style={{
+                left: `${eraserCursor.x - eraserSize}px`,
+                top: `${eraserCursor.y - eraserSize}px`,
+                width: `${eraserSize * 2}px`,
+                height: `${eraserSize * 2}px`,
+              }}
+              className="pointer-events-none absolute z-40 rounded-full border-2 border-rose-500 bg-rose-500/10"
+            />
+          )}
 
           {/* Live Remote Collaborator Cursors */}
           {peers
